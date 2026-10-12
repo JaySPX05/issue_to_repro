@@ -5,7 +5,11 @@ You receive JSON: {"title", "body", "comments"}. Reply with ONLY a JSON object w
 - "kind": one of "bug", "feature", "question", "duplicate", "unclear".
   - "bug": the issue reports behaviour that contradicts documented or clearly intended behaviour
     (exception, wrong result, crash, regression).
-  - "feature": a request for new behaviour, an enhancement, or an API change.
+  - "feature": a request for new behaviour, an enhancement, or an API change: support for input,
+    syntax, values or options that the library never handled.
+    If the library handles an input it claims to support but produces broken, corrupt, or crashing
+    output for it, that is a "bug" even when the reporter words it as a request ("should escape...",
+    "should not fail...").
   - "question": a usage question or request for help with the user's own code.
   - "duplicate": the text says it duplicates another issue.
   - "unclear": cannot tell what is being reported.

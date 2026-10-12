@@ -5,3 +5,5 @@ __pycache__/
 *.sqlite
 *.egg-info/
 .pytest_cache/
+
+results.json

@@ -57,6 +57,15 @@ LAYOUT_CMD = (f"cd {REPO_DIR} && git ls-files '*.py' | grep -vE '(^|/)(tests?|do
 
 
 # ---------------------------------------------------------------- pure helpers (easy to test)
+def unescape_newlines(script: str) -> str:
+    """Some models return the whole script on one line with literal backslash-n sequences (seen with
+    the real Super model on tabulate-180). A real script has line breaks; a one-liner full of `\\n`
+    never does, so in that one case only, turn the literal sequences into real newlines."""
+    if "\n" not in script and script.count("\\n") >= 2:
+        return script.replace("\\n", "\n")
+    return script
+
+
 def classify(res: ExecResult, script_path: str) -> str:
     if res.timed_out:
         return "hang"
@@ -158,7 +167,7 @@ def repro(ctx: Context) -> State:
                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
         plan = ctx.model_json("super", messages, REPRO_SCHEMA, stage="repro").data
 
-        script = plan["script"]
+        script = unescape_newlines(plan["script"])
         if not script.strip() or len(script) > MAX_SCRIPT_CHARS:      # unusable: costs the attempt, not a crash
             history.append({"script": clip(script, 500), "python_flags": [], "extra_packages": [],
                             "classification": "script_error",

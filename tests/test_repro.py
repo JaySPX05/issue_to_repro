@@ -203,3 +203,16 @@ def test_the_prompt_carries_the_issue_triage_and_source_files():
     prompt = llm.calls[0][1][-1]["content"]
     assert "calling f() with no args returns 2" in prompt and "lib/core.py" in prompt and "call f()" in prompt
     assert llm.calls[0][1][0]["content"].startswith("You write a short Python script")
+
+
+def test_one_line_script_with_literal_backslash_n_is_unescaped():
+    from itr.agent.stages.repro import unescape_newlines
+    assert unescape_newlines(r"import os\nprint(os.name)\n") == "import os\nprint(os.name)\n"
+
+
+def test_real_scripts_are_left_alone():
+    from itr.agent.stages.repro import unescape_newlines
+    multi = 'print("a\\nb")\nx = 1\n'                    # has real newlines and an escape inside a string
+    assert unescape_newlines(multi) == multi
+    one = 'print("a\\nb")'                                # a legitimate one-liner with ONE escape: untouched
+    assert unescape_newlines(one) == one
