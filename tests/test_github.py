@@ -32,3 +32,51 @@ def test_fetch_stage_keeps_preset_issue_and_ref():
     ctx, _ = make_ctx(issue={"url": "u", "title": "T", "ref": "abc123"})
     fetch(ctx)                                                 # must not hit the network
     assert ctx.run.issue["ref"] == "abc123"
+
+
+def _http(comments):
+    def fake_get(url, token=None):
+        if url.endswith("/issues/5"):
+            return {"title": "T", "body": "B"}
+        if "/comments" in url:
+            return comments
+        return {"default_branch": "develop"}
+    return fake_get
+
+
+CS = [{"user": {"login": "a"}, "body": "early", "created_at": "2020-01-01T10:00:00Z"},
+      {"user": {"login": "b"}, "body": "fix is X", "created_at": "2020-03-01T10:00:00Z"},
+      {"user": {"login": "c"}, "body": "no stamp"}]
+
+
+def test_as_of_drops_comments_written_after_the_cutoff():
+    out = fetch_issue("https://github.com/o/r/issues/5", http_get=_http(CS), as_of="2020-02-01T00:00:00+00:00")
+    assert [c["body"] for c in out["comments"]] == ["early", "no stamp"]
+
+
+def test_as_of_compares_instants_across_time_zones():
+    # 2020-01-01T15:00+05:30 is 09:30Z, i.e. BEFORE the 10:00Z comment
+    out = fetch_issue("https://github.com/o/r/issues/5", http_get=_http(CS), as_of="2020-01-01T15:00:00+05:30")
+    assert [c["body"] for c in out["comments"]] == ["no stamp"]
+
+
+def test_no_as_of_keeps_everything():
+    out = fetch_issue("https://github.com/o/r/issues/5", http_get=_http(CS))
+    assert len(out["comments"]) == 3
+
+
+def test_fetch_stage_does_not_let_the_default_branch_overwrite_a_pinned_ref(monkeypatch):
+    from itr import github
+    from itr.agent.stages.fetch import fetch
+    from tests.fakes import make_ctx
+    seen = {}
+
+    def fake_fetch(url, token=None, http_get=None, as_of=None):
+        seen["as_of"] = as_of
+        return {"url": url, "repo": "o/r", "number": 5, "title": "T", "body": "B", "comments": [], "ref": "develop"}
+    monkeypatch.setattr(github, "fetch_issue", fake_fetch)
+    ctx, _ = make_ctx(issue={"url": "https://github.com/o/r/issues/5", "ref": "abc123", "ref_pinned": True,
+                             "as_of": "2020-02-01T00:00:00+00:00"})
+    fetch(ctx)
+    assert ctx.run.issue["ref"] == "abc123" and ctx.run.issue["ref_pinned"] is True
+    assert ctx.run.issue["title"] == "T" and seen["as_of"] == "2020-02-01T00:00:00+00:00"

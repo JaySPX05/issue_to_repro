@@ -1,0 +1,121 @@
+# Evaluation cases for the Issue-to-Repro Agent: real, closed GitHub issues with known fixes.
+#
+# How each case was checked: for every case with a `fix_sha`, the tests added or changed by the fix
+# FAIL on `ref` (the commit just before the fix) and PASS on `fix_sha`. Re-check with
+#   python scripts/verify_case.py <path-to-clone> <fix_sha>
+#
+# How the harness should use a case: put {url, ref, ref_pinned: true, as_of} into Run.issue and run
+# the machine. `ref` is the commit just before the fix; `as_of` is the fix date, so comments written
+# after it (the maintainers' explanation) are hidden from the agent.
+#
+# Issue text was NOT copied here; FETCH reads it live. The categories and notes come from the fix
+# commits and their tests. Open each issue link once and confirm it reads as described.
+#
+# expected_outcome values are the machine's outcomes: CONFIRMED, NOT_REPRODUCED, NEEDS_MAINTAINER.
+
+cases:
+  - id: tabulate-180
+    url: https://github.com/astanin/python-tabulate/issues/180
+    repo: astanin/python-tabulate
+    category: crash-on-edge-input
+    difficulty: easy
+    ref: 90fbd7e5b127bafd0aecfe118798743589b1a60b
+    fix_sha: 20c6370d5da2dae89b305bfb6c7f12a0f8b7236c
+    as_of: "2022-10-10T11:04:25+02:00"
+    expected_outcome: CONFIRMED
+    failing_test_before_fix: test/test_regression.py::test_exception_on_empty_data_with_maxcolwidths
+    symptom: "tabulate([], maxcolwidths=5) raises instead of returning an empty string."
+    tests_the_agent_on: "Does it notice the empty-input edge case and write a one-line repro?"
+
+  - id: tabulate-241
+    url: https://github.com/astanin/python-tabulate/issues/241
+    repo: astanin/python-tabulate
+    category: wrong-output
+    difficulty: easy
+    ref: 46c9fe38d36e1f185271884ace2e80415389216c
+    fix_sha: e6a24aa6e00ca8ce9a1987f28c11ca08c6f19383
+    as_of: "2026-03-05T15:47:22+01:00"
+    expected_outcome: CONFIRMED
+    failing_test_before_fix: test/test_regression.py::test_github_escape_pipe_character
+    symptom: "A literal | in a cell is not escaped in the github and pipe table formats, breaking the table."
+    tests_the_agent_on: "Wrong output with no exception: the agent must compare actual vs expected text."
+
+  - id: tabulate-399
+    url: https://github.com/astanin/python-tabulate/issues/399
+    repo: astanin/python-tabulate
+    category: hang
+    difficulty: hard
+    ref: 1818a3b4ce66b69b08e8f76cfd25c32a67dcdd53
+    fix_sha: 032dc0d107fedd4ce7921c1a494a76a2910f49ff
+    as_of: "2026-03-05T00:19:11+01:00"
+    expected_outcome: CONFIRMED
+    failing_test_before_fix: "<test run never finishes>"
+    needs_optional_dependency: wcwidth   # without it the fix's tests are skipped and the bug cannot show
+    symptom: "Text wrapping loops forever when a double-width (e.g. Korean) character is wider than the column width."
+    tests_the_agent_on: "A hang is not an exception. Needs a timeout to see it, and an optional dependency to trigger it."
+
+  - id: cachetools-405
+    url: https://github.com/tkem/cachetools/issues/405
+    repo: tkem/cachetools
+    category: state-logic
+    difficulty: medium
+    ref: 16e88894ef7d79b25a68f5a3b5411ed881342725
+    fix_sha: 39b31bc9b63abe98497409945e9d382d8918c8fb
+    as_of: "2026-08-01T22:40:47+02:00"
+    expected_outcome: CONFIRMED
+    failing_test_before_fix: tests/test_cache.py::CacheTest::test_getsizeof_replace_grow
+    symptom: "Growing an existing entry's size evicts more than it should (the full new size is reserved instead of only the extra)."
+    tests_the_agent_on: "Multi-step stateful scenario; the repro needs getsizeof and a specific sequence of assignments."
+
+  - id: click-1925
+    url: https://github.com/pallets/click/issues/1925
+    repo: pallets/click
+    category: api-semantics
+    difficulty: medium
+    ref: da2b658e6185b5ae69abcefe755077336024a5e6
+    fix_sha: ee56925bc4f5451a125317e183f498e8bd1aecb3
+    as_of: "2021-07-03T06:53:45-07:00"
+    expected_outcome: CONFIRMED
+    failing_test_before_fix: "tests/test_options.py::test_is_bool_flag_is_correctly_set[bool non-flag [None]]"
+    symptom: "Option.is_bool_flag is True for a boolean option that is not a flag."
+    tests_the_agent_on: "Reading a flag-handling bug in a large, well-known library."
+
+  - id: click-2877
+    url: https://github.com/pallets/click/issues/2877
+    repo: pallets/click
+    category: environment-flag
+    difficulty: hard
+    ref: df2e5ed8c4e89f51ff4eddb9600d913083613e62
+    fix_sha: 6f85d26dcd50c1745e81040ed4f2b61f8bf293cf
+    as_of: "2026-06-27T12:47:47+04:00"
+    expected_outcome: CONFIRMED
+    failing_test_before_fix: tests/test_types.py::test_path_dash_no_byteswarning
+    symptom: "Comparing bytes with str inside click.Path(allow_dash=True) emits BytesWarning, visible only under python -bb."
+    tests_the_agent_on: "The bug does not appear with a plain `python script.py`; the repro must use the right interpreter flag."
+
+  - id: click-3186
+    url: https://github.com/pallets/click/issues/3186
+    repo: pallets/click
+    category: platform-specific
+    difficulty: trap
+    ref: 2468b70997a6ec27ced4b4867954c90da3f92075
+    fix_sha: c5cced7b3096804567688df645194e3ed3dfa88b
+    as_of: "2026-04-30T00:25:38+01:00"
+    expected_outcome: NOT_REPRODUCED
+    acceptable_outcomes: [NOT_REPRODUCED, NEEDS_MAINTAINER]
+    failing_test_before_fix: null   # the fix shipped with no test: the bug only exists on Windows
+    symptom: "click.launch/open_url on Windows treats the cmd.exe built-in 'start' as an executable."
+    tests_the_agent_on: "A Windows-only bug in a Linux sandbox. CONFIRMED here means the agent faked a repro (false positive)."
+
+  - id: click-1629
+    url: https://github.com/pallets/click/issues/1629
+    repo: pallets/click
+    category: feature-request
+    difficulty: trap
+    ref: 5eaa4c5cba417fb4b65e5b9f5810e6043a312594
+    fix_sha: ce498eb559e37852e6c69651a5176b4b6fcf28e8
+    as_of: "2020-08-05T07:05:31-07:00"
+    expected_outcome: NEEDS_MAINTAINER
+    failing_test_before_fix: tests/test_basic.py::test_boolean_conversion
+    symptom: "Request for the BOOL type to accept the strings 'on' and 'off'. A request for new behavior, not a malfunction."
+    tests_the_agent_on: "Triage must stop here without touching the sandbox. Anything else is a false positive."

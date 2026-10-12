@@ -5,6 +5,7 @@ import json
 import os
 import re
 import urllib.request
+from datetime import datetime, timezone
 from typing import Callable
 
 ISSUE_RE = re.compile(r"^https?://github\.com/([\w.-]+)/([\w.-]+)/issues/(\d+)/?(?:[#?].*)?$")
@@ -31,17 +32,29 @@ def _http_get(url: str, token: str | None = None):
         return json.loads(r.read().decode("utf-8"))
 
 
+def parse_ts(text: str) -> datetime:
+    """Parse an ISO-8601 timestamp (GitHub's 'Z' suffix or a +HH:MM offset) into an aware datetime."""
+    dt = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def fetch_issue(url: str, token: str | None = None,
-                http_get: Callable[..., object] = _http_get) -> dict:
+                http_get: Callable[..., object] = _http_get, as_of: str | None = None) -> dict:
     """Return {url, repo, number, title, body, comments, ref}.
 
-    `ref` is the repo's default branch here. For evaluation on closed issues, set `ref`
-    yourself (the commit just before the fix) *before* calling the machine: FETCH keeps it."""
+    `ref` is the repo's default branch here. For evaluation on closed issues the eval harness sets
+    `ref` (the commit just before the fix) on the issue first, and FETCH keeps it.
+
+    `as_of` (ISO timestamp, normally the fix commit's date) drops comments written after it, so an
+    evaluation run cannot read the maintainers' explanation of the fix."""
     token = token or os.environ.get("GITHUB_TOKEN")
     owner, repo, number = parse_issue_url(url)
     issue = http_get(f"{API}/repos/{owner}/{repo}/issues/{number}", token)
     comments = http_get(f"{API}/repos/{owner}/{repo}/issues/{number}/comments?per_page=30", token)
     meta = http_get(f"{API}/repos/{owner}/{repo}", token)
+    cutoff = parse_ts(as_of) if as_of else None
+    kept = [c for c in comments
+            if cutoff is None or not c.get("created_at") or parse_ts(c["created_at"]) <= cutoff]
     return {
         "url": url,
         "repo": f"{owner}/{repo}",
@@ -49,6 +62,6 @@ def fetch_issue(url: str, token: str | None = None,
         "title": issue.get("title", ""),
         "body": issue.get("body") or "",
         "comments": [{"author": (c.get("user") or {}).get("login", ""), "body": c.get("body") or ""}
-                     for c in comments],
+                     for c in kept],
         "ref": meta.get("default_branch", "main"),
     }
