@@ -79,3 +79,8 @@ def spend_attempt(run: Run, stage: str) -> bool:
 
 def attempts_used(run: Run, stage: str) -> int:
     return run.budget["attempts"].get(stage, 0)
+
+
+def attempts_left(run: Run, stage: str) -> int:
+    b = run.budget
+    return max(0, b["max_attempts"].get(stage, 1) - b["attempts"].get(stage, 0))

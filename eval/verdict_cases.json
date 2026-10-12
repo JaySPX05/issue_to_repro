@@ -1,0 +1,139 @@
+[
+ {
+  "id": "t180-good",
+  "case": "tabulate-180",
+  "label": "accept",
+  "why": "correct repro",
+  "script": "from tabulate import tabulate\nout = tabulate([], maxcolwidths=5)\nprint(repr(out))\nassert out == ''\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "IndexError from tabulate([], maxcolwidths=5)",
+  "output": "exit_code=1\n--- stdout ---\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 2, in <module>\n    out = tabulate([], maxcolwidths=5)\n  File \"/work/repo/tabulate/__init__.py\", line 2065, in tabulate\n    num_cols = len(list_of_lists[0])\n                   ~~~~~~~~~~~~~^^^\nIndexError: list index out of range\n"
+ },
+ {
+  "id": "t241-good",
+  "case": "tabulate-241",
+  "label": "accept",
+  "why": "correct repro",
+  "script": "from tabulate import tabulate\nout = tabulate([[\"spam|eggs\"]], headers=[\"h\"], tablefmt=\"github\")\nprint(out)\nassert \"spam\\\\|eggs\" in out\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "pipe not escaped in github format",
+  "output": "exit_code=1\n--- stdout ---\n| h         |\n|:----------|\n| spam|eggs |\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 4, in <module>\n    assert \"spam\\\\|eggs\" in out\n           ^^^^^^^^^^^^^^^^^^^^\nAssertionError\n"
+ },
+ {
+  "id": "c405-model",
+  "case": "cachetools-405",
+  "label": "accept",
+  "why": "real model script",
+  "script": "import cachetools\nc = cachetools.LRUCache(maxsize=10, getsizeof=lambda v: v)\nc['a'] = 3\nc['b'] = 3\nc['b'] = 7\nprint(dict(c), c.currsize)\nassert dict(c) == {'a': 3, 'b': 7}\nassert c.currsize == 10\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "AssertionError: other key evicted",
+  "output": "exit_code=1\n--- stdout ---\n{'b': 7} 7\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 7, in <module>\n    assert dict(c) == {'a': 3, 'b': 7}\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n"
+ },
+ {
+  "id": "c2877-model",
+  "case": "click-2877",
+  "label": "accept",
+  "why": "real model script",
+  "script": "from click.types import Path\nresult = Path(allow_dash=True).convert('', '', '')\nprint(f'Result: {result!r}')\nassert isinstance(result, str)\n",
+  "python_flags": [
+   "-bb",
+   "-W error"
+  ],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "BytesWarning raised as error",
+  "output": "exit_code=1\n--- stdout ---\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 2, in <module>\n    result = Path(allow_dash=True).convert('', '', '')\n  File \"/work/repo/src/click/types.py\", line 1107, in convert\n    is_dash = self.file_okay and self.allow_dash and rv in (b\"-\", \"-\")\n                                                     ^^^^^^^^^^^^^^^^^\nBytesWarning: Comparison between bytes and string\n"
+ },
+ {
+  "id": "c1925-good",
+  "case": "click-1925",
+  "label": "accept",
+  "why": "correct repro",
+  "script": "from click import Option\no = Option(['-a'], type=bool)\nprint(o.is_bool_flag)\nassert o.is_bool_flag is False\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "is_bool_flag is True for non-flag",
+  "output": "exit_code=1\n--- stdout ---\nTrue\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 4, in <module>\n    assert o.is_bool_flag is False\n           ^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n"
+ },
+ {
+  "id": "c1925-model",
+  "case": "click-1925",
+  "label": "reject",
+  "why": "real model script: fails before AND after the fix (a non-flag bool option rightly needs a value)",
+  "script": "import click\nfrom click.exceptions import MissingParameter\n\n@click.command()\n@click.option('--switch', type=bool)\ndef f(switch):\n    print(switch)\n\nif __name__ == '__main__':\n    opt = f.params[0]\n    print(f'is_flag={opt.is_flag}')\n    print(f'is_bool_flag={opt.is_bool_flag}')\n    try:\n        f(['--switch'])\n    except MissingParameter as e:\n        print(f'Exception: {e}')\n        raise\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "Option '--switch' requires an argument",
+  "output": "exit_code=2\n--- stdout ---\nis_flag=False\nis_bool_flag=True\n\n--- stderr ---\nError: Option '--switch' requires an argument.\n"
+ },
+ {
+  "id": "c3186-model",
+  "case": "click-3186",
+  "label": "reject",
+  "why": "real model script: AttributeError, and a Windows-only bug on Linux",
+  "script": "import click\nimport sys\noriginal = sys.platform\nsys.platform = 'win32'\ntry:\n    click._termui_impl.open_url('http://example.com')\n    print('Success: open_url returned None')\nexcept Exception as e:\n    print(f'Error: {e!r}')\n    raise\nfinally:\n    sys.platform = original\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "FileNotFoundError because 'start' is a cmd built-in",
+  "output": "exit_code=1\n--- stdout ---\nError: AttributeError('_termui_impl')\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 6, in <module>\n    click._termui_impl.open_url('http://example.com')\n    ^^^^^^^^^^^^^^^^^^\n  File \"/work/repo/src/click/__init__.py\", line 124, in __getattr__\n    raise AttributeError(name)\nAttributeError: _termui_impl\n"
+ },
+ {
+  "id": "t180-importerror",
+  "case": "tabulate-180",
+  "label": "reject",
+  "why": "typo in the import",
+  "script": "from tabulate import tabulte\nout = tabulte([], maxcolwidths=5)\nassert out == ''\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "IndexError from tabulate([])",
+  "output": "exit_code=1\n--- stdout ---\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 1, in <module>\n    from tabulate import tabulte\nImportError: cannot import name 'tabulte' from 'tabulate' (/work/repo/tabulate/__init__.py). Did you mean: 'tabulate'?\n"
+ },
+ {
+  "id": "c405-typo",
+  "case": "cachetools-405",
+  "label": "reject",
+  "why": "misspelled class name",
+  "script": "import cachetools\nc = cachetools.LRUCahce(maxsize=10, getsizeof=lambda v: v)\nc['a'] = 3\nassert len(c) == 1\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "wrong eviction",
+  "output": "exit_code=1\n--- stdout ---\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 2, in <module>\n    c = cachetools.LRUCahce(maxsize=10, getsizeof=lambda v: v)\n        ^^^^^^^^^^^^^^^^^^^\nAttributeError: module 'cachetools' has no attribute 'LRUCahce'. Did you mean: 'LRUCache'?\n"
+ },
+ {
+  "id": "c2877-typeerror",
+  "case": "click-2877",
+  "label": "reject",
+  "why": "convert called without its arguments",
+  "script": "from click.types import Path\nPath(allow_dash=True).convert()\n",
+  "python_flags": [
+   "-bb"
+  ],
+  "installed": [],
+  "classification": "failed",
+  "claimed_symptom": "BytesWarning",
+  "output": "exit_code=1\n--- stdout ---\n\n--- stderr ---\nTraceback (most recent call last):\n  File \"/work/repro/repro_1.py\", line 2, in <module>\n    Path(allow_dash=True).convert()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\nTypeError: Path.convert() missing 3 required positional arguments: 'value', 'param', and 'ctx'\n"
+ },
+ {
+  "id": "t241-sleep",
+  "case": "tabulate-241",
+  "label": "reject",
+  "why": "script times out only because of its own sleep",
+  "script": "import time\nfrom tabulate import tabulate\nprint(tabulate([['spam|eggs']], tablefmt='github'))\ntime.sleep(100)\n",
+  "python_flags": [],
+  "installed": [],
+  "classification": "hang",
+  "claimed_symptom": "pipe not escaped",
+  "output": "exit_code=-9 (killed: no result after 30s, so the call never returned)\n--- stdout ---\n|:----------|\n| spam|eggs |\n\n--- stderr ---\n"
+ }
+]

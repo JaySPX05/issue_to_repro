@@ -98,4 +98,7 @@ def happy_stages():
     def repro(ctx):
         ctx.run.repro = {"stub": True, "script": "", "last_output": "", "attempts": 0}
         return State.VERDICT
-    return {**STAGES, State.SETUP: setup, State.REPRO: repro}
+    def verdict(ctx):
+        ctx.run.verdict = {"stub": True, "matches_issue": True, "reasoning": "", "confidence": 1.0}
+        return State.FIX
+    return {**STAGES, State.SETUP: setup, State.REPRO: repro, State.VERDICT: verdict}
