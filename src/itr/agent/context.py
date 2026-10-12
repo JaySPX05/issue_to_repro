@@ -64,7 +64,7 @@ class Context:
               stage: str = "") -> LLMResponse:
         budget.check(self.run)
         resp = self.llm_call(tier, messages, schema)
-        budget.record_tokens(self.run, resp.tier, resp.tokens_in + resp.tokens_out)
+        budget.record_tokens(self.run, resp.tier, resp.tokens_in, resp.tokens_out)
         self.emit("model_call", {
             "stage": stage, "tier": resp.tier, "model": resp.model,
             "tokens_in": resp.tokens_in, "tokens_out": resp.tokens_out,

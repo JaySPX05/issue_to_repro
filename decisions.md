@@ -21,6 +21,7 @@ A running record of every technical decision in this project: what we chose, why
 | Only third-party runtime dependency | `jsonschema` | D19 |
 | License | MIT | D16 |
 | Evaluation | Real closed issues, checked by running the fix's own tests | D31-D35 |
+| Reproduction | Script that asserts correct behaviour; outcome classified by code | D36-D40 |
 
 ---
 
@@ -228,3 +229,35 @@ A running record of every technical decision in this project: what we chose, why
 - **Interpreter flags (click-2877):** a plain script run shows nothing; the repro has to use `python -bb`.
 - **Stateful bugs (cachetools-405):** the repro needs a specific sequence of operations and a `getsizeof` function.
 - **Expectation:** the model will not solve all of these. Reporting honestly where it fails is part of the result.
+
+## D36: A repro script asserts the CORRECT behaviour, so it fails while the bug exists
+- **Decision:** REPRO asks the model for a script that checks what the reporter *expected*. While the bug exists the script must fail (an exception, a failed assert, or a hang); once fixed it exits 0. It prints the real value first, so the output is evidence. What happened when it ran is classified by code, not by a model: `failed` (non-zero exit) and `hang` (killed by the timeout) are candidate reproductions that go to VERDICT; `passed` (exit 0) means the bug did not show and the model retries with that result in its prompt; `script_error` (a SyntaxError in our own script) is our mistake and is retried without bothering the judge.
+- **Why:** One convention gives a binary, mechanical signal for every kind of bug, and the same script becomes the seed for the regression test in FIX/VERIFY. Separating "did it fail" (code) from "did it fail for the right reason" (VERDICT, a separate model call, D5) keeps each judgment simple and stops the agent grading its own work.
+- **Proof it works:** on all six real bugs, the correct script fails on the buggy commit and passes on the fixed one (see D40).
+- **Concept:** **Test oracle.** The script encodes an expectation, so a failure is information.
+
+## D37: A hang is a result; the timeout is 30 seconds
+- **Decision:** Scripts run with a 30-second limit. A run that hits it counts as reproducing a hang (the output says the call never returned). The sandbox adapters must kill the whole process group on timeout, not only the shell.
+- **Why:** tabulate-399 is an infinite loop. With no timeout it would hold the whole run forever, and with a timeout but no meaning attached it would look like an error. When I first tried it in a plain shell the grandchild process survived the timeout, which is why the process-group requirement is written down.
+
+## D38: Anything the model controls that reaches a shell is an allow-list or a validated pattern
+- **Decision:** Interpreter flags must come from a fixed list (`-b`, `-bb`, `-O`, `-OO`, `-X dev`, `-X utf8`, `-W error`, `-W default`); `-I` is excluded because it ignores `PYTHONPATH` and would import the wrong copy of the library. Extra packages must match a plain requirement pattern (at most 3, each quoted); anything else (`x; rm -rf /`, `$(whoami)`, `-e .`) is refused and reported back to the model. Empty or oversized scripts cost an attempt but never crash the run.
+- **Why:** Issue text is written by strangers, and the model reads it. A malicious issue could try to steer the model into a harmful command. The sandbox limits the damage; these checks stop it reaching the shell at all.
+- **Concept:** **Defence in depth** and **least privilege**: validate at the boundary even when something else (the sandbox) also protects you.
+
+## D39: Project install is essential; test dependencies are best-effort; a broken test suite does not block reproduction (found by real runs)
+- **Decision:** In SETUP, installing the project itself is essential. Dependency groups, extras and `requirements*.txt` files are best-effort: a failure is recorded as a warning and the run continues. The collection smoke check runs with `-p no:warnings`. If collection still fails after the attempt budget but the project is installed (editable, or the repo has no packaging files and Python works), SETUP continues with `env["tests_collect_ok"] = False` instead of failing. It still fails if the clone, checkout, or project install fails.
+- **Why:** Running click at a 2021 commit showed two problems: its pinned `requirements/dev.txt` includes an old `pyyaml` that does not build on a modern Python, and its config turns warnings into errors, so a newer pytest could not even collect its tests. Neither stops the library from being imported, and reproducing a bug needs the library, not a healthy test suite. A scripted mock could not have found either problem.
+- **Cost:** FIX and VERIFY must read `tests_collect_ok` and handle `False` (use their own test file and run it with `-p no:warnings`).
+- **Concept:** **Be strict about what is essential and forgiving about what is not.**
+
+## D40: What was proven, and what was not
+- **Proven (real shell, real repositories, a stand-in for the model):** SETUP then REPRO on the pinned commits of all six real-bug cases. The correct script fails on the buggy commit (IndexError; unescaped pipe; hang caught by the timeout; wrong cache size; wrong flag value; BytesWarning under `-bb`) and passes on the fixed commit. This tests the machinery: cloning old versions, installing, running with the repo first on the import path, flags, extra packages, timeouts, classification.
+- **Not proven:** whether the real Nemotron models write scripts like these. That is what `scripts/try_repro_prompt.py` measures: it prints the model's triage and script beside the known answer without executing anything.
+- **Why say it:** a passing test that quietly stands in for the model proves less than it looks like. The write-up for judges must say which numbers come from real model runs.
+
+## D41: Budget in dollars as well as tokens (from the real price list)
+- **Decision:** Each run has a cost cap (`max_cost_usd`, default $0.15) next to the token and time caps. Cost is computed per call from a price table in `budget.py`, with input and output priced separately (USD per 1M tokens: nano 0.06/0.24, super 0.30/0.90, ultra 1.00/3.00, read from the Token Factory catalog on 2026-10-12). Default token cap lowered from 400k to 300k. An unknown tier is priced as ultra so a mistake overestimates rather than underestimates.
+- **Why:** The account has a $1.00 trial credit. A token count alone says nothing about money: a million Ultra output tokens costs about 12 times a million Nano ones, and reasoning tokens bill as output. A rough run (cheap triage, a few Super attempts, one Ultra verdict) costs about $0.10 to $0.15, so $1 is only about 6 to 8 runs and the 8-case eval would not fit. Hackathon credits are needed, and the cap stops one runaway run from using up the rest.
+- **Rejected:** A cap on tokens only (blind to which model spent them). Hard-coding prices in several places (they live in one table, and the cost shown in the UI uses the same one).
+- **Concept:** **Budget in the unit you actually pay in.** Tokens are a proxy for cost, and the proxy breaks when prices differ by 10x across tiers.

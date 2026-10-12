@@ -83,3 +83,19 @@ def make_ctx(issue=None, llm=None, sandbox=None):
 
 BUG = {"kind": "bug", "claimed_version": "1.2.0", "steps": ["call foo([])"],
        "expected": "returns None", "actual": "IndexError", "missing_info": []}
+
+
+def happy_stages():
+    """Trivial stand-ins for the stages that need a scripted sandbox, so machine-level tests exercise
+    the wiring (sequencing, budget, errors) and not the stage logic, which has its own tests."""
+    from itr.agent.stages import STAGES
+    from itr.agent.states import State
+
+    def setup(ctx):
+        ctx.run.env = {"stub": True}
+        return State.REPRO
+
+    def repro(ctx):
+        ctx.run.repro = {"stub": True, "script": "", "last_output": "", "attempts": 0}
+        return State.VERDICT
+    return {**STAGES, State.SETUP: setup, State.REPRO: repro}

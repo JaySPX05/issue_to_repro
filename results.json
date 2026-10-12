@@ -1,0 +1,413 @@
+[
+ {
+  "case": {
+   "id": "tabulate-180",
+   "url": "https://github.com/astanin/python-tabulate/issues/180",
+   "repo": "astanin/python-tabulate",
+   "category": "crash-on-edge-input",
+   "difficulty": "easy",
+   "ref": "90fbd7e5b127bafd0aecfe118798743589b1a60b",
+   "fix_sha": "20c6370d5da2dae89b305bfb6c7f12a0f8b7236c",
+   "as_of": "2022-10-10T11:04:25+02:00",
+   "expected_outcome": "CONFIRMED",
+   "failing_test_before_fix": "test/test_regression.py::test_exception_on_empty_data_with_maxcolwidths",
+   "symptom": "tabulate([], maxcolwidths=5) raises instead of returning an empty string.",
+   "tests_the_agent_on": "Does it notice the empty-input edge case and write a one-line repro?"
+  },
+  "issue_title": "Exception when tabulating empty data and using maxcolwidths",
+  "comments_visible": 2,
+  "triage": {
+   "data": {
+    "kind": "bug",
+    "claimed_version": null,
+    "steps": [
+     "tabulate([])",
+     "tabulate([], maxcolwidths=5)"
+    ],
+    "expected": "Should return an empty string or appropriate representation without raising an exception.",
+    "actual": "IndexError: list index out of range",
+    "missing_info": [
+     "version of the tabulate library being used"
+    ]
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 2.9,
+   "finish": "stop",
+   "tokens": 1225,
+   "json_mode": "json_schema"
+  },
+  "repro": {
+   "data": {
+    "reasoning": "The bug occurs when tabulate() receives an empty list of rows; the code tries to access list_of_lists[0] to determine the number of columns, causing an IndexError. The script reproduces this by calling tabulate([]) and tabulate([], maxcolwidths=5) and expects an empty string result.",
+    "script": "import tabulate\\n\\ndef test_call(data, maxcolwidths=None):\\n    try:\\n        if maxcolwidths is None:\\n            res = tabulate.tabulate(data)\\n        else:\\n            res = tabulate.tabulate(data, maxcolwidths=maxcolwidths)\\n    except Exception as e:\\n        print(f'Exception: {e}')\\n        raise\\n    print(f'Result: {repr(res)}')\\n    assert res == ''\\n\\ntest_call([])\\ntest_call([], maxcolwidths=5)\\n",
+    "python_flags": [],
+    "extra_packages": [],
+    "expected_symptom": "IndexError: list index out of range raised when tabulate([]) or tabulate([], maxcolwidths=5) is called."
+   },
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "seconds": 5.1,
+   "finish": "stop",
+   "tokens": 2239,
+   "json_mode": "json_schema"
+  }
+ },
+ {
+  "case": {
+   "id": "tabulate-241",
+   "url": "https://github.com/astanin/python-tabulate/issues/241",
+   "repo": "astanin/python-tabulate",
+   "category": "wrong-output",
+   "difficulty": "easy",
+   "ref": "46c9fe38d36e1f185271884ace2e80415389216c",
+   "fix_sha": "e6a24aa6e00ca8ce9a1987f28c11ca08c6f19383",
+   "as_of": "2026-03-05T15:47:22+01:00",
+   "expected_outcome": "CONFIRMED",
+   "failing_test_before_fix": "test/test_regression.py::test_github_escape_pipe_character",
+   "symptom": "A literal | in a cell is not escaped in the github and pipe table formats, breaking the table.",
+   "tests_the_agent_on": "Wrong output with no exception: the agent must compare actual vs expected text."
+  },
+  "issue_title": "Escaping pipe (`|`) characters when `tablefmt=\"pipe\"`",
+  "comments_visible": 2,
+  "triage": {
+   "data": {
+    "kind": "feature",
+    "claimed_version": null,
+    "steps": [
+     "Read CSV containing pipe characters in columns/values",
+     "Call .to_markdown(tablefmt='pipe')"
+    ],
+    "expected": "A valid markdown table with pipe characters properly escaped, preserving equal column counts per row.",
+    "actual": "The output is an invalid markdown table with mismatched columns and unescaped pipes, breaking table structure.",
+    "missing_info": [
+     "pandas version",
+     "tabulate version",
+     "environment details (OS, Python version)",
+     "CSV sample data"
+    ]
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 5.0,
+   "finish": "stop",
+   "tokens": 1958,
+   "json_mode": "json_schema"
+  }
+ },
+ {
+  "case": {
+   "id": "tabulate-399",
+   "url": "https://github.com/astanin/python-tabulate/issues/399",
+   "repo": "astanin/python-tabulate",
+   "category": "hang",
+   "difficulty": "hard",
+   "ref": "1818a3b4ce66b69b08e8f76cfd25c32a67dcdd53",
+   "fix_sha": "032dc0d107fedd4ce7921c1a494a76a2910f49ff",
+   "as_of": "2026-03-05T00:19:11+01:00",
+   "expected_outcome": "CONFIRMED",
+   "failing_test_before_fix": "<test run never finishes>",
+   "expects_packages": [
+    "wcwidth"
+   ],
+   "needs_optional_dependency": "wcwidth",
+   "symptom": "Text wrapping loops forever when a double-width (e.g. Korean) character is wider than the column width.",
+   "tests_the_agent_on": "A hang is not an exception. Needs a timeout to see it, and an optional dependency to trigger it."
+  },
+  "issue_title": "An infinite loop in _CustomTextWrap on wide characters with width=1",
+  "comments_visible": 0,
+  "triage": {
+   "data": {
+    "kind": "bug",
+    "claimed_version": null,
+    "steps": [
+     "import tabulate",
+     "data = '\\ud55c\\uae00'",
+     "tabulate._CustomTextWrap(width=1).wrap(data)"
+    ],
+    "expected": "The wrap method should return a wrapped representation of the string without causing an infinite loop.",
+    "actual": "The call results in an infinite loop and does not return or raise an explicit error.",
+    "missing_info": [
+     "tabulate library version",
+     "Python version",
+     "operating system"
+    ]
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 3.2,
+   "finish": "stop",
+   "tokens": 1315,
+   "json_mode": "json_schema"
+  },
+  "repro": {
+   "data": {
+    "reasoning": "The bug occurs because _CustomTextWrap incorrectly handles characters that occupy two display columns when the requested width is 1, causing the wrap method to loop forever. The script calls wrap on a Korean string with width=1 and expects it to return a finite list; if the bug is present the call hangs, demonstrating the infinite loop.",
+    "script": "import tabulate\n\ndata = '\\ud55c\\uae00'  # 한글\nwrapped = tabulate._CustomTextWrap(width=1).wrap(data)\nprint('Wrapped result:', wrapped)\nassert len(wrapped) > 0, 'Expected a non‑empty wrap result'",
+    "python_flags": [],
+    "extra_packages": [],
+    "expected_symptom": "The call to tabulate._CustomTextWrap(width=1).wrap(data) hangs (infinite loop) instead of returning a wrapped list."
+   },
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "seconds": 4.1,
+   "finish": "stop",
+   "tokens": 1847,
+   "json_mode": "json_schema"
+  }
+ },
+ {
+  "case": {
+   "id": "cachetools-405",
+   "url": "https://github.com/tkem/cachetools/issues/405",
+   "repo": "tkem/cachetools",
+   "category": "state-logic",
+   "difficulty": "medium",
+   "ref": "16e88894ef7d79b25a68f5a3b5411ed881342725",
+   "fix_sha": "39b31bc9b63abe98497409945e9d382d8918c8fb",
+   "as_of": "2026-08-01T22:40:47+02:00",
+   "expected_outcome": "CONFIRMED",
+   "failing_test_before_fix": "tests/test_cache.py::CacheTest::test_getsizeof_replace_grow",
+   "symptom": "Growing an existing entry's size evicts more than it should (the full new size is reserved instead of only the extra).",
+   "tests_the_agent_on": "Multi-step stateful scenario; the repro needs getsizeof and a specific sequence of assignments."
+  },
+  "issue_title": "Cache.__setitem__ over-evicts when growing an existing key with getsizeof",
+  "comments_visible": 1,
+  "triage": {
+   "data": {
+    "kind": "bug",
+    "claimed_version": null,
+    "steps": [
+     "Initialize LRUCache with maxsize=10",
+     "Insert key 'a' with value 3",
+     "Insert key 'b' with value 3",
+     "Grow key 'b' to value 7"
+    ],
+    "expected": "Growing an existing key when the total size would fit within maxsize should not evict any entries; both keys should remain and currsize should equal maxsize.",
+    "actual": "An unrelated entry is evicted, leaving only the updated key in the cache with a currsize smaller than maxsize.",
+    "missing_info": [
+     "library version not specified",
+     "OS not specified",
+     "environment details not provided"
+    ]
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 3.1,
+   "finish": "stop",
+   "tokens": 2085,
+   "json_mode": "json_schema"
+  },
+  "repro": {
+   "data": {
+    "reasoning": "The bug is in Cache.__setitem__ where updating an existing key reserves the full new size instead of the additional size needed, causing unnecessary evictions. The script reproduces this by growing an existing key in an LRUCache so that the total size would exactly fit maxsize, but the bug evicts the other key.",
+    "script": "import cachetools\nc = cachetools.LRUCache(maxsize=10, getsizeof=lambda v: v)\nc['a'] = 3\nc['b'] = 3\nc['b'] = 7\nprint(dict(c), c.currsize)\nassert dict(c) == {'a': 3, 'b': 7}\nassert c.currsize == 10",
+    "python_flags": [],
+    "extra_packages": [],
+    "expected_symptom": "AssertionError because dict(c) equals {'b': 7} and c.currsize equals 7"
+   },
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "seconds": 3.1,
+   "finish": "stop",
+   "tokens": 2475,
+   "json_mode": "json_schema"
+  }
+ },
+ {
+  "case": {
+   "id": "click-1925",
+   "url": "https://github.com/pallets/click/issues/1925",
+   "repo": "pallets/click",
+   "category": "api-semantics",
+   "difficulty": "medium",
+   "ref": "da2b658e6185b5ae69abcefe755077336024a5e6",
+   "fix_sha": "ee56925bc4f5451a125317e183f498e8bd1aecb3",
+   "as_of": "2021-07-03T06:53:45-07:00",
+   "expected_outcome": "CONFIRMED",
+   "failing_test_before_fix": "tests/test_options.py::test_is_bool_flag_is_correctly_set[bool non-flag [None]]",
+   "symptom": "Option.is_bool_flag is True for a boolean option that is not a flag.",
+   "tests_the_agent_on": "Reading a flag-handling bug in a large, well-known library."
+  },
+  "issue_title": "Option.is_bool_flag is set to True even if the option is not a flag",
+  "comments_visible": 2,
+  "triage": {
+   "data": {
+    "kind": "bug",
+    "claimed_version": "8.0.1",
+    "steps": [
+     "Define a click command with @click.option('--switch', type=bool)",
+     "Call f('--switch'.split())"
+    ],
+    "expected": "The option should be recognized as a boolean flag and the command should execute without requiring an argument.",
+    "actual": "The command raises an error: Option '--switch' requires an argument.",
+    "missing_info": [
+     "Python version",
+     "Operating system"
+    ]
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 3.9,
+   "finish": "stop",
+   "tokens": 2029,
+   "json_mode": "json_schema"
+  },
+  "repro": {
+   "data": {
+    "reasoning": "In Click 8.0.1 the line that sets `Option.is_bool_flag` mistakenly ignores the `is_flag` condition, causing non‑flag options with `type=bool` to have `is_bool_flag=True`. This makes Click treat the option as if it were a boolean flag when parsing arguments, leading to the error \"Option '--switch' requires an argument.\" The script below creates such an option, prints the flag values, then invokes the command with `--switch` (no value) to trigger the missing‑parameter error.",
+    "script": "import click\nfrom click.exceptions import MissingParameter\n\n@click.command()\n@click.option('--switch', type=bool)\ndef f(switch):\n    print(switch)\n\nif __name__ == '__main__':\n    opt = f.params[0]\n    print(f'is_flag={opt.is_flag}')\n    print(f'is_bool_flag={opt.is_bool_flag}')\n    try:\n        f(['--switch'])\n    except MissingParameter as e:\n        print(f'Exception: {e}')\n        raise\n",
+    "python_flags": [],
+    "extra_packages": [],
+    "expected_symptom": "Option '--switch' requires an argument."
+   },
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "seconds": 11.1,
+   "finish": "stop",
+   "tokens": 3717,
+   "json_mode": "json_schema"
+  }
+ },
+ {
+  "case": {
+   "id": "click-2877",
+   "url": "https://github.com/pallets/click/issues/2877",
+   "repo": "pallets/click",
+   "category": "environment-flag",
+   "difficulty": "hard",
+   "ref": "df2e5ed8c4e89f51ff4eddb9600d913083613e62",
+   "fix_sha": "6f85d26dcd50c1745e81040ed4f2b61f8bf293cf",
+   "as_of": "2026-06-27T12:47:47+04:00",
+   "expected_outcome": "CONFIRMED",
+   "expects_flags": [
+    "-bb"
+   ],
+   "failing_test_before_fix": "tests/test_types.py::test_path_dash_no_byteswarning",
+   "symptom": "Comparing bytes with str inside click.Path(allow_dash=True) emits BytesWarning, visible only under python -bb.",
+   "tests_the_agent_on": "The bug does not appear with a plain `python script.py`; the repro must use the right interpreter flag."
+  },
+  "issue_title": "[Python forward compat] click.types.Path.covert: BytesWarning: Comparison between bytes and string",
+  "comments_visible": 2,
+  "triage": {
+   "data": {
+    "kind": "bug",
+    "claimed_version": "8.1.8",
+    "steps": [
+     "python -Im pip install Click",
+     "python -bb -Werror",
+     "from click.types import Path; Path(allow_dash=True).convert('', '', '')"
+    ],
+    "expected": "The conversion should complete without raising a BytesWarning or error.",
+    "actual": "A BytesWarning: Comparison between bytes and string is emitted, causing a traceback.",
+    "missing_info": []
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 3.5,
+   "finish": "stop",
+   "tokens": 1670,
+   "json_mode": "json_schema"
+  },
+  "repro": {
+   "data": {
+    "reasoning": "The bug occurs when Path.convert compares a bytes literal b\"-\" with a string \"-\" inside a tuple, triggering a BytesWarning. With -bb -Werror the warning is promoted to an error, causing the call to raise an exception.",
+    "script": "from click.types import Path\nresult = Path(allow_dash=True).convert('', '', '')\nprint(f\"Result: {result!r}\")\nassert isinstance(result, str)",
+    "python_flags": [
+     "-bb",
+     "-W error"
+    ],
+    "extra_packages": [],
+    "expected_symptom": "BytesWarning: Comparison between bytes and string is raised as an error."
+   },
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "seconds": 5.0,
+   "finish": "stop",
+   "tokens": 2375,
+   "json_mode": "json_schema"
+  }
+ },
+ {
+  "case": {
+   "id": "click-3186",
+   "url": "https://github.com/pallets/click/issues/3186",
+   "repo": "pallets/click",
+   "category": "platform-specific",
+   "difficulty": "trap",
+   "ref": "2468b70997a6ec27ced4b4867954c90da3f92075",
+   "fix_sha": "c5cced7b3096804567688df645194e3ed3dfa88b",
+   "as_of": "2026-04-30T00:25:38+01:00",
+   "expected_outcome": "NOT_REPRODUCED",
+   "acceptable_outcomes": [
+    "NOT_REPRODUCED",
+    "NEEDS_MAINTAINER"
+   ],
+   "failing_test_before_fix": null,
+   "symptom": "click.launch/open_url on Windows treats the cmd.exe built-in 'start' as an executable.",
+   "tests_the_agent_on": "A Windows-only bug in a Linux sandbox. CONFIRMED here means the agent faked a repro (false positive)."
+  },
+  "issue_title": "fix: `_termui_impl.open_url()` — 'start' on Windows is a cmd built-in, not an executable",
+  "comments_visible": 6,
+  "triage": {
+   "data": {
+    "kind": "bug",
+    "claimed_version": null,
+    "steps": [],
+    "expected": "The URL should open using the Windows \"start\" command without errors.",
+    "actual": "Calling open_url fails because \"start\" is a cmd built-in rather than an executable, causing a subprocess failure.",
+    "missing_info": [
+     "library version",
+     "specific Windows version",
+     "exact command or input that triggers the issue",
+     "any traceback or detailed error message"
+    ]
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 3.0,
+   "finish": "stop",
+   "tokens": 1269,
+   "json_mode": "json_schema"
+  },
+  "repro": {
+   "data": {
+    "reasoning": "The bug occurs on Windows where click._termui_impl.open_url tries to launch a URL via subprocess.call(['start', url]), but 'start' is a cmd.exe built‑in, not an executable. Without shell=True the call fails with a FileNotFoundError. The script monkeypatches sys.platform to 'win32' to trigger the Windows branch and calls open_url; if the bug is present the function raises, causing the script to fail.",
+    "script": "import click\nimport sys\noriginal = sys.platform\nsys.platform = 'win32'\ntry:\n    click._termui_impl.open_url('http://example.com')\n    print('Success: open_url returned None')\nexcept Exception as e:\n    print(f'Error: {e!r}')\n    raise\nfinally:\n    sys.platform = original\n",
+    "python_flags": [],
+    "extra_packages": [],
+    "expected_symptom": "FileNotFoundError (or OSError) raised when calling click._termui_impl.open_url on Windows because 'start' is a cmd built‑in."
+   },
+   "model": "nvidia/nemotron-3-super-120b-a12b",
+   "seconds": 5.9,
+   "finish": "stop",
+   "tokens": 2562,
+   "json_mode": "json_schema"
+  }
+ },
+ {
+  "case": {
+   "id": "click-1629",
+   "url": "https://github.com/pallets/click/issues/1629",
+   "repo": "pallets/click",
+   "category": "feature-request",
+   "difficulty": "trap",
+   "ref": "5eaa4c5cba417fb4b65e5b9f5810e6043a312594",
+   "fix_sha": "ce498eb559e37852e6c69651a5176b4b6fcf28e8",
+   "as_of": "2020-08-05T07:05:31-07:00",
+   "expected_outcome": "NEEDS_MAINTAINER",
+   "failing_test_before_fix": "tests/test_basic.py::test_boolean_conversion",
+   "symptom": "Request for the BOOL type to accept the strings 'on' and 'off'. A request for new behavior, not a malfunction.",
+   "tests_the_agent_on": "Triage must stop here without touching the sandbox. Anything else is a false positive."
+  },
+  "issue_title": "BOOL should accept \"on\" and \"off\"",
+  "comments_visible": 0,
+  "triage": {
+   "data": {
+    "kind": "feature",
+    "claimed_version": null,
+    "steps": [],
+    "expected": "The BOOL type should accept and convert the strings \"on\" and \"off\" in addition to existing boolean literals.",
+    "actual": "The current implementation does not accept \"on\" or \"off\" as valid values for BOOL.",
+    "missing_info": [
+     "exact version of the library being used",
+     "example code showing how BOOL is currently used",
+     "details on what other boolean strings are supported"
+    ]
+   },
+   "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+   "seconds": 2.4,
+   "finish": "stop",
+   "tokens": 789,
+   "json_mode": "json_schema"
+  }
+ }
+]

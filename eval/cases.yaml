@@ -50,6 +50,7 @@ cases:
     as_of: "2026-03-05T00:19:11+01:00"
     expected_outcome: CONFIRMED
     failing_test_before_fix: "<test run never finishes>"
+    expects_packages: [wcwidth]
     needs_optional_dependency: wcwidth   # without it the fix's tests are skipped and the bug cannot show
     symptom: "Text wrapping loops forever when a double-width (e.g. Korean) character is wider than the column width."
     tests_the_agent_on: "A hang is not an exception. Needs a timeout to see it, and an optional dependency to trigger it."
@@ -89,6 +90,7 @@ cases:
     fix_sha: 6f85d26dcd50c1745e81040ed4f2b61f8bf293cf
     as_of: "2026-06-27T12:47:47+04:00"
     expected_outcome: CONFIRMED
+    expects_flags: ["-bb"]
     failing_test_before_fix: tests/test_types.py::test_path_dash_no_byteswarning
     symptom: "Comparing bytes with str inside click.Path(allow_dash=True) emits BytesWarning, visible only under python -bb."
     tests_the_agent_on: "The bug does not appear with a plain `python script.py`; the repro must use the right interpreter flag."
