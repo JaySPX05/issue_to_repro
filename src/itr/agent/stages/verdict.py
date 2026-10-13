@@ -9,6 +9,9 @@ The model answers factual questions; CODE makes the decision (decisions D43):
   would_pass_if_fixed      if the library behaved exactly as the reporter expects, would this script
                            exit 0? (False for a script that is wrong in itself, e.g. one that calls
                            something with a missing argument, or fails on a platform the bug is not on.)
+  cannot_reproduce_in_sandbox  the bug depends on something this sandbox cannot provide (another OS,
+                           hardware, a service). With confidence >= 0.8 the run stops at once as
+                           NOT_REPRODUCED instead of burning attempts.
   confidence               0..1
 The verdict is "matches" only if BOTH booleans are true and confidence >= CONFIDENCE_MIN. A model that
 says "yes" while contradicting its own booleans is overruled.
@@ -28,6 +31,7 @@ from itr.agent.context import Context, clip
 from itr.agent.states import State
 
 CONFIDENCE_MIN = 0.6
+GIVE_UP_CONFIDENCE = 0.8      # to stop early because the sandbox cannot show this bug (a stricter bar than accepting)
 
 VERDICT_SCHEMA = {
     "type": "object",
@@ -36,12 +40,13 @@ VERDICT_SCHEMA = {
         "observed_symptom": {"type": "string"},
         "failure_matches_symptom": {"type": "boolean"},
         "would_pass_if_fixed": {"type": "boolean"},
+        "cannot_reproduce_in_sandbox": {"type": "boolean"},
         "confidence": {"type": "number"},
         "reasoning": {"type": "string"},
         "feedback_for_next_attempt": {"type": "string"},
     },
     "required": ["reported_symptom", "observed_symptom", "failure_matches_symptom", "would_pass_if_fixed",
-                 "confidence", "reasoning", "feedback_for_next_attempt"],
+                 "cannot_reproduce_in_sandbox", "confidence", "reasoning", "feedback_for_next_attempt"],
     "additionalProperties": False,
 }
 
@@ -95,9 +100,13 @@ def verdict(ctx: Context) -> State:
         "observed_symptom": data["observed_symptom"],
         "rejected_because": why,
     }
+    ctx.run.verdict["cannot_reproduce_in_sandbox"] = data["cannot_reproduce_in_sandbox"]
     ctx.artifact("verdict", ctx.run.verdict)
     if matches:
         return State.FIX
+    if data["cannot_reproduce_in_sandbox"] and data["confidence"] >= GIVE_UP_CONFIDENCE:
+        ctx.run.outcome = "NOT_REPRODUCED"        # e.g. a Windows-only bug on a Linux sandbox: more tries cannot help
+        return State.DONE
     if attempts_left(ctx.run, "repro") > 0:
         return State.REPRO
     ctx.run.outcome = "NOT_REPRODUCED"

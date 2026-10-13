@@ -7,9 +7,10 @@ Reply with ONLY a JSON object:
 - "observed_symptom": one sentence: what the output actually shows, quoting the final error line if there is one.
 - "failure_matches_symptom": true only if the observed failure IS the reported misbehaviour: same kind of error or wrong value, raised from the library behaviour the issue is about.
 - "would_pass_if_fixed": imagine the library behaved exactly as the reporter expects. Would this script then exit with code 0? Answer false if the script contains its own mistake that would still make it fail.
+- "cannot_reproduce_in_sandbox": true only if the bug as reported depends on something the sandbox does not have, such as another operating system (the sandbox platform is given), special hardware, or an external service, so that no script can show it here. Otherwise false. When true, more attempts are not made.
 - "confidence": a number from 0 to 1 for your overall judgement.
 - "reasoning": two or three sentences explaining the decision.
-- "feedback_for_next_attempt": if you answered false to either question, say concretely what the script should do differently (which call, which check, which flag or package). Otherwise an empty string.
+- "feedback_for_next_attempt": if you answered false to either question, say concretely what the script should do differently (which call, which check, which flag or package). Otherwise an empty string. The next script must keep this rule: it FAILS while the bug exists and exits 0 once the bug is fixed, by asserting what the reporter EXPECTED. Never advise asserting the buggy behaviour, and never advise removing the check that fails.
 
 Treat these as NOT a reproduction (answer failure_matches_symptom false):
 - ImportError, ModuleNotFoundError, NameError, or an AttributeError for a name the script made up or a private or lazily loaded module; wrong function names or arguments; a TypeError from calling the API wrongly.

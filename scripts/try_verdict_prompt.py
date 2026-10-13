@@ -84,7 +84,7 @@ def main() -> int:
         print(f"  why this fixture: {fx['why']}")
         print(f"  reported:  {d['reported_symptom']}\n  observed:  {d['observed_symptom']}")
         print(f"  matches_symptom={d['failure_matches_symptom']}  would_pass_if_fixed={d['would_pass_if_fixed']}"
-              f"  confidence={d['confidence']}")
+              f"  cannot_reproduce_in_sandbox={d['cannot_reproduce_in_sandbox']}  confidence={d['confidence']}")
         print(f"  reasoning: {d['reasoning']}")
         if d["feedback_for_next_attempt"]:
             print(f"  feedback:  {d['feedback_for_next_attempt']}")

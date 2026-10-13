@@ -11,7 +11,7 @@ from tests.fakes import BUG, FakeLLM, FakeSandbox, make_ctx
 from itr.sandbox.base import ExecResult
 
 GOOD = {"reported_symptom": "IndexError on empty input", "observed_symptom": "IndexError: list index out of range",
-        "failure_matches_symptom": True, "would_pass_if_fixed": True, "confidence": 0.9,
+        "failure_matches_symptom": True, "would_pass_if_fixed": True, "cannot_reproduce_in_sandbox": False, "confidence": 0.9,
         "reasoning": "same exception from the library", "feedback_for_next_attempt": ""}
 
 
@@ -142,3 +142,32 @@ def test_long_output_is_clipped_for_the_judge():
     verdict(ctx)
     sent = json.loads(llm.calls[0][1][1]["content"])["repro_attempt"]["output"]
     assert len(sent) < 4000
+
+
+WINDOWS_ONLY = {**GOOD, "failure_matches_symptom": False, "cannot_reproduce_in_sandbox": True, "confidence": 0.9,
+                "feedback_for_next_attempt": "needs Windows"}
+
+
+def test_a_bug_the_sandbox_cannot_show_stops_the_run_without_more_attempts():
+    ctx, log, llm = make(WINDOWS_ONLY, attempts_used=1, max_attempts={"repro": 4})
+    assert verdict(ctx) is State.DONE
+    assert ctx.run.outcome == "NOT_REPRODUCED"
+    assert ctx.run.verdict["cannot_reproduce_in_sandbox"] is True
+
+
+def test_giving_up_early_needs_high_confidence():
+    ctx, log, llm = make({**WINDOWS_ONLY, "confidence": 0.7}, attempts_used=1, max_attempts={"repro": 4})
+    assert verdict(ctx) is State.REPRO and ctx.run.outcome is None
+
+
+def test_the_give_up_flag_cannot_override_an_accepted_repro():
+    ctx, log, llm = make({**GOOD, "cannot_reproduce_in_sandbox": True})
+    assert verdict(ctx) is State.FIX and ctx.run.outcome is None
+
+
+def test_the_prompt_keeps_the_assertion_convention_and_forbids_asserting_the_bug():
+    ctx, log, llm = make(GOOD)
+    verdict(ctx)
+    prompt = llm.calls[0][1][0]["content"]
+    assert "Never advise asserting the buggy behaviour" in prompt
+    assert "cannot_reproduce_in_sandbox" in prompt
