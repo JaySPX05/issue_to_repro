@@ -101,4 +101,15 @@ def happy_stages():
     def verdict(ctx):
         ctx.run.verdict = {"stub": True, "matches_issue": True, "reasoning": "", "confidence": 1.0}
         return State.FIX
-    return {**STAGES, State.SETUP: setup, State.REPRO: repro, State.VERDICT: verdict}
+    def fix(ctx):
+        ctx.run.fix = {"stub": True, "patch": "", "regression_test": ""}
+        return State.VERIFY
+
+    def verify(ctx):
+        return State.REPORT
+
+    def report(ctx):
+        ctx.run.outcome = ctx.run.outcome or "CONFIRMED"
+        return State.DONE
+    return {**STAGES, State.SETUP: setup, State.REPRO: repro, State.VERDICT: verdict,
+            State.FIX: fix, State.VERIFY: verify, State.REPORT: report}
