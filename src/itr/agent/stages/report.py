@@ -19,6 +19,14 @@ REPORT_SCHEMA = {
 }
 
 
+def tidy(text: str) -> str:
+    """Models sometimes write a whole comment on one line with a literal `\\n` or PowerShell-style backtick-n
+    where line breaks belong (seen with the nano model). Real markdown has line breaks."""
+    if text.count("\n") < 3:
+        text = text.replace("\\n", "\n").replace("`n", "\n")
+    return text.replace("\u2702\ufe0f", "").strip()
+
+
 def evidence(ctx: Context, outcome: str) -> dict:
     run, fx = ctx.run, ctx.run.fix or {}
     repro, verdict = run.repro or {}, run.verdict or {}
@@ -39,7 +47,9 @@ def evidence(ctx: Context, outcome: str) -> dict:
 
 def plain_comment(data: dict) -> dict:
     """Deterministic fallback, no model involved."""
-    lines = [f"Reproduced: {data['issue_title']}", "", "### Reproduction", "```python",
+    intro = ("I reproduced this issue and drafted a fix with a regression test; the checks are below."
+             if data["outcome"] == "CONFIRMED" else "I reproduced this issue but could not verify a patch.")
+    lines = [intro, "", "### Reproduction", "```python",
              data["reproduction"]["script"], "```", "", "```", data["reproduction"]["output"], "```"]
     if data["outcome"] == "CONFIRMED":
         lines += ["", "### Proposed patch", "```diff", data.get("patch", ""), "```", "",
@@ -55,7 +65,8 @@ def report(ctx: Context) -> State:
     try:
         messages = [{"role": "system", "content": ctx.prompt("report")},
                     {"role": "user", "content": json.dumps(data, ensure_ascii=False)}]
-        out = ctx.model_json("nano", messages, REPORT_SCHEMA, stage="report").data
+        out = ctx.model_json("nano", messages, REPORT_SCHEMA, stage="report", retries=0).data
+        out = {"title": out["title"].strip(), "comment": tidy(out["comment"])}
         generated = True
     except StageError:
         out, generated = plain_comment(data), False

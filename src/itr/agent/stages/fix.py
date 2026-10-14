@@ -2,10 +2,10 @@
 
 Two model calls per attempt, each small and checkable:
   LOCATE  which source files matter (we show the model the file list, never the whole repo)
-  PATCH   exact search/replace edits plus a new test file, shown only the relevant files
+  PATCH   numbered line-range edits plus a new test file, shown only the relevant files (numbered)
 
 FIX never trusts its own output. It validates the plan (paths, sizes, protected files), dry-applies the
-edits to prove every search text matches exactly once, stores the diff, resets the repo, and ALWAYS hands
+edits to prove every line range is valid, stores the diff, resets the repo, and ALWAYS hands
 over to VERIFY, which runs everything and decides (decisions D49-D51).
 
 run.fix = {patch, regression_test, test_path, edits, root_cause, notes, plan_errors, history[],
@@ -18,7 +18,7 @@ import re
 from itr.agent.budget import attempts_used, spend_attempt
 from itr.agent.context import Context, clip
 from itr.agent.patching import (MAX_TEST_CHARS, PROTECTED, apply_edits, check_edits, repo_diff, reset_repo,
-                                test_path_error, tracked_files)
+                                syntax_errors, test_path_error, tracked_files)
 from itr.agent.paths import REPO_DIR
 from itr.agent.states import State
 
@@ -41,8 +41,9 @@ LOCATE_SCHEMA = {
 
 EDIT_SCHEMA = {
     "type": "object",
-    "properties": {"path": {"type": "string"}, "search": {"type": "string"}, "replace": {"type": "string"}},
-    "required": ["path", "search", "replace"],
+    "properties": {"path": {"type": "string"}, "start_line": {"type": "integer"},
+                   "end_line": {"type": "integer"}, "first_line": {"type": "string"}, "replace": {"type": "string"}},
+    "required": ["path", "start_line", "end_line", "first_line", "replace"],
     "additionalProperties": False,
 }
 
@@ -72,35 +73,39 @@ def traceback_locations(output: str) -> dict[str, list[int]]:
 
 
 def render_file(text: str, lines_of_interest: list[int], terms: list[str], limit: int = FILE_CHARS) -> str:
-    """The whole file when it is short; otherwise only windows around the traceback lines and the lines
-    that mention a search term, with the gaps marked, so a big module does not flood the prompt."""
+    """A numbered view ("  12| code"). The whole file when it is short; otherwise only windows around the
+    traceback lines and the lines that mention a search term, with the gaps marked. The numbers are the
+    ones the model must use in its edits. Lines are split on "\\n" only, exactly as apply_edits does."""
+    lines = [ln.rstrip("\r") for ln in text.split("\n")]
+    if lines and lines[-1] == "":
+        lines.pop()
+
+    def fmt(i: int) -> str:
+        return f"{i:>5}| {lines[i - 1]}"
+
     if len(text) <= limit:
-        return text
-    lines = text.splitlines()
+        return "\n".join(fmt(i) for i in range(1, len(lines) + 1))
     keep: set[int] = set()
     for n in lines_of_interest:
         keep.update(range(max(1, n - WINDOW), min(len(lines), n + WINDOW) + 1))
     for term in terms:
         if not term:
             continue
-        pat = re.compile(r"\b(def|class)\s+" + re.escape(term) + r"\b|" + re.escape(term))
         for i, ln in enumerate(lines, 1):
-            if pat.search(ln):
+            if term in ln:
                 keep.update(range(max(1, i - 3), min(len(lines), i + WINDOW) + 1))
                 if len(keep) * 40 > limit * 3:
                     break
     if not keep:
-        return clip(text, limit)
+        keep = set(range(1, min(len(lines), 120) + 1))
     out, prev = [], 0
     for i in sorted(keep):
-        if prev and i != prev + 1:
-            out.append(f"... [lines {prev + 1}-{i - 1} omitted] ...")
-        elif not prev and i > 1:
-            out.append(f"... [lines 1-{i - 1} omitted] ...")
-        out.append(lines[i - 1])
+        if prev != i - 1:
+            out.append(f"      ... [lines {prev + 1}-{i - 1} omitted] ...")
+        out.append(fmt(i))
         prev = i
     if prev < len(lines):
-        out.append(f"... [lines {prev + 1}-{len(lines)} omitted] ...")
+        out.append(f"      ... [lines {prev + 1}-{len(lines)} omitted] ...")
     return clip("\n".join(out), limit)
 
 
@@ -176,8 +181,8 @@ def test_style_example(ctx: Context, tracked: set[str]) -> dict:
 
 def history_for_prompt(history: list[dict]) -> list[dict]:
     return [{"root_cause": h.get("root_cause", ""), "edits": [
-                {"path": e["path"], "search": clip(e["search"], 400), "replace": clip(e["replace"], 400)}
-                for e in h.get("edits", [])],
+                {"path": e["path"], "start_line": e["start_line"], "end_line": e["end_line"],
+                 "replace": clip(e["replace"], 500)} for e in h.get("edits", [])],
              "test_path": h.get("test_path"), "test_code": clip(h.get("test_code", ""), 1500),
              "failure": h.get("failure", "")} for h in history[-3:]]
 
@@ -225,11 +230,19 @@ def fix(ctx: Context) -> State:
     if not errors:                                # dry run: prove every edit applies, keep the diff, undo
         errors = apply_edits(ctx, plan["edits"])
         if not errors:
+            errors = syntax_errors(ctx, sorted({e["path"] for e in plan["edits"]}))
+        if not errors:
             patch = repo_diff(ctx)
+            for h in history:
+                if h.get("patch") == patch and h.get("test_code") == plan["test_code"]:
+                    errors = [f"this patch AND test are identical to the ones in attempt {h['attempt']}, which failed "
+                              f"({clip(h.get('failure', ''), 300)}). Do something different."]
+                    patch = ""
+                    break
         reset_repo(ctx)
     entry = {"attempt": attempt, "tier": tier, "root_cause": plan["root_cause"], "edits": plan["edits"],
              "test_path": plan["test_path"], "test_code": plan["test_code"], "notes": plan["notes"],
-             "plan_errors": errors, "failure": ""}
+             "plan_errors": errors, "failure": "", "patch": patch}
     history.append(entry)
     ctx.run.fix = {"patch": patch, "regression_test": plan["test_code"], "test_path": plan["test_path"],
                    "edits": plan["edits"], "root_cause": plan["root_cause"], "notes": plan["notes"],

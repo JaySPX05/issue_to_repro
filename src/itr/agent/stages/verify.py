@@ -140,6 +140,11 @@ def verify(ctx: Context) -> State:
             else:
                 fx["suite"]["ran"] = False
         fx["verified"] = True
+        ctx.artifact("verified_fix", {"patch": fx.get("patch", ""), "test_path": test_path,
+                                      "test_code": fx["regression_test"], "root_cause": fx.get("root_cause", ""),
+                                      "notes": fx.get("notes", ""), "before": fx["before_result"],
+                                      "after": fx["after_result"], "repro_after": fx.get("repro_after"),
+                                      "suite": fx["suite"]})
         ctx.artifact("verify_passed", {"before": fx["before_result"]["exit_code"],
                                        "after": fx["after_result"]["exit_code"], "suite": fx["suite"]})
         return State.REPORT

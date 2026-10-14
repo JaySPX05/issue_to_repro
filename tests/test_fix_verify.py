@@ -15,7 +15,11 @@ pytestmark = pytest.mark.skipif(not bash_available(), reason="needs a POSIX bash
 LIB = "def total(xs):\n    s = 0\n    for x in xs[1:]:\n        s += x\n    return s\n"
 SCRIPT = "from lib import total\nassert total([1, 2, 3]) == 6\n"
 EXISTING_TEST = "from lib import total\n\ndef test_empty():\n    assert total([]) == 0\n"
-GOOD_EDIT = {"path": "lib.py", "search": "xs[1:]", "replace": "xs"}
+GOOD_EDIT = {"path": "lib.py", "start_line": 3, "end_line": 3, "first_line": "for x in xs[1:]:", "replace": "    for x in xs:"}
+
+
+def edit(start, end, first, replace, path="lib.py"):
+    return {"path": path, "start_line": start, "end_line": end, "first_line": first, "replace": replace}
 GOOD_TEST = "from lib import total\n\ndef test_total_includes_first_item():\n    assert total([1, 2, 3]) == 6\n"
 LOCATE = {"reasoning": "the loop skips the first item", "files": ["lib.py"], "search_terms": ["total"]}
 
@@ -75,12 +79,13 @@ def test_test_path_must_be_new_and_named_test():
 
 def test_check_edits_limits():
     t = {"lib.py"}
-    e = {"path": "lib.py", "search": "a", "replace": "b"}
+    e = edit(1, 1, "a", "b")
     assert check_edits([e], t) == []
     assert check_edits([], t)
     assert check_edits([e] * 6, t)
-    assert check_edits([{**e, "search": " "}], t)
-    assert check_edits([{**e, "replace": "a"}], t)
+    assert check_edits([{**e, "start_line": 0}], t)
+    assert check_edits([{**e, "start_line": 5, "end_line": 4}], t)
+    assert check_edits([{**e, "replace": "x" * 7000}], t)
 
 
 def test_traceback_locations_and_file_windows():
@@ -88,8 +93,9 @@ def test_traceback_locations_and_file_windows():
     assert traceback_locations(out) == {"pkg/a.py": [12], "b.py": [7]}
     text = "\n".join(f"line{i}" for i in range(1, 3001))
     shown = render_file(text, [1500], [])
-    assert "line1500" in shown and "line1\n" not in shown and "omitted" in shown
-    assert render_file("short", [], []) == "short"
+    assert " 1500| line1500" in shown and "    1| line1" not in shown and "omitted" in shown
+    assert render_file("a\nb\n", [], []) == "    1| a\n    2| b"
+    assert render_file("a\r\nb\r\n", [], []) == "    1| a\n    2| b"          # CRLF files look the same
 
 
 def test_failed_test_parsing():
@@ -114,18 +120,39 @@ def test_traceback_files_come_first_in_the_candidate_list():
 
 
 # ---- apply_edits
-def test_apply_edits_requires_exactly_one_match_and_is_all_or_nothing(env):
+def test_apply_edits_is_all_or_nothing_and_explains_wrong_numbers(env):
     ctx, _ = make(env, FakeLLM())
-    assert apply_edits(ctx, [{"path": "lib.py", "search": "nonexistent", "replace": "x"}])
-    assert apply_edits(ctx, [{"path": "lib.py", "search": "s", "replace": "x"}])          # many matches
-    errors = apply_edits(ctx, [GOOD_EDIT, {"path": "lib.py", "search": "zzz", "replace": "q"}])
+    errors = apply_edits(ctx, [edit(3, 3, "for y in ys:", "    for x in xs:")])
+    assert errors and "line 3 is" in errors[0] and "for x in xs[1:]:" in errors[0]       # shows the real line
+    assert apply_edits(ctx, [edit(3, 99, "for x in xs[1:]:", "x")])                        # beyond the file
+    errors = apply_edits(ctx, [GOOD_EDIT, edit(99, 99, "zzz", "q")])
     assert errors and env.read_file(f"{REPO_DIR}/lib.py") == LIB                          # nothing written
+
+
+def test_apply_edits_replaces_inserts_and_deletes_using_original_numbers(env):
+    ctx, _ = make(env, FakeLLM())
+    # two edits in one file, both numbered against the ORIGINAL file; the first adds a line
+    assert apply_edits(ctx, [edit(2, 2, "s = 0", "    s = 0\n    n = 0"),
+                             edit(3, 4, "for x in xs[1:]:", "    for x in xs:\n        s += x")]) == []
+    assert env.read_file(f"{REPO_DIR}/lib.py") == "def total(xs):\n    s = 0\n    n = 0\n    for x in xs:\n        s += x\n    return s\n"
+
+
+def test_deleting_lines_with_an_empty_replacement(env):
+    ctx, _ = make(env, FakeLLM())
+    assert apply_edits(ctx, [edit(2, 2, "s = 0", "")]) == []
+    assert env.read_file(f"{REPO_DIR}/lib.py") == "def total(xs):\n    for x in xs[1:]:\n        s += x\n    return s\n"
+
+
+def test_overlapping_edits_and_no_op_edits_are_refused(env):
+    ctx, _ = make(env, FakeLLM())
+    assert "overlap" in apply_edits(ctx, [edit(2, 3, "s = 0", "x"), edit(3, 4, "for x in xs[1:]:", "y")])[0]
+    assert "change nothing" in apply_edits(ctx, [edit(2, 2, "s = 0", "    s = 0")])[0]
 
 
 def test_apply_edits_keeps_windows_line_endings(tmp_path):
     sb = make_repo(tmp_path, {"lib.py": LIB.replace("\n", "\r\n")})
     ctx, _ = make(sb, FakeLLM())
-    assert apply_edits(ctx, [{"path": "lib.py", "search": "for x in xs[1:]:\n        s += x", "replace": "for x in xs:\n        s += x"}]) == []
+    assert apply_edits(ctx, [edit(3, 4, "for x in xs[1:]:", "    for x in xs:\n        s += x")]) == []
     text = sb.read_file(f"{REPO_DIR}/lib.py")
     assert "xs:\r\n" in text and "\n" not in text.replace("\r\n", "")
 
@@ -134,8 +161,10 @@ def test_apply_edits_keeps_windows_line_endings(tmp_path):
 def test_good_fix_is_verified_and_repo_is_left_clean(env):
     write_repro_script(env)
     llm = FakeLLM({"super": [LOCATE, fix_plan()]})
-    ctx, _ = make(env, llm, tests_ok=True)
+    ctx, log = make(env, llm, tests_ok=True)
     assert run_fix_verify(ctx) == State.REPORT
+    shown = [p["content"] for t, p in log.events if t == "artifact" and p["name"] == "verified_fix"][0]
+    assert "xs[1:]" in shown["patch"] and shown["test_code"] == GOOD_TEST and shown["before"]["exit_code"] == 1
     fx = ctx.run.fix
     assert fx["verified"] and fx["before_result"]["exit_code"] == 1 and fx["after_result"]["exit_code"] == 0
     assert "xs[1:]" in fx["patch"] and fx["suite"] == {"ran": True, "new_failures": []}
@@ -157,7 +186,7 @@ def test_test_that_passes_on_original_code_is_rejected_and_retried(env):
 
 
 def test_patch_that_does_not_fix_is_rejected(env):
-    useless = {"path": "lib.py", "search": "s = 0", "replace": "s = 0  # nothing"}
+    useless = edit(2, 2, "s = 0", "    s = 0  # nothing")
     ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[useless])]}))
     write_repro_script(env)
     assert run_fix_verify(ctx) == State.FIX
@@ -173,7 +202,7 @@ def test_test_that_cannot_run_is_not_counted_as_a_detected_bug(env):
 
 
 def test_fix_that_breaks_an_existing_test_is_rejected(env):
-    breaking = {"path": "lib.py", "search": "    return s", "replace": "    return s if xs else None"}
+    breaking = edit(5, 5, "return s", "    return s if xs else None")
     both = [GOOD_EDIT, breaking]
     ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=both)]}), tests_ok=True)
     write_repro_script(env)
@@ -189,17 +218,17 @@ def test_repro_that_still_fails_after_patch_blocks_confirmation(env):
 
 
 def test_plan_that_edits_protected_files_never_reaches_the_sandbox(env):
-    cheat = {"path": "tests/test_existing.py", "search": "total([]) == 0", "replace": "True"}
+    cheat = edit(4, 4, "assert total([]) == 0", "    assert True", path="tests/test_existing.py")
     ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[cheat])]}))
     assert fix(ctx) == State.VERIFY
     assert ctx.run.fix["plan_errors"] and verify(ctx) == State.FIX
     assert env.read_file(f"{REPO_DIR}/tests/test_existing.py") == EXISTING_TEST
 
 
-def test_search_text_that_does_not_match_is_a_plan_error_and_repo_unchanged(env):
-    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[{"path": "lib.py", "search": "xs[2:]", "replace": "xs"}])]}))
+def test_wrong_line_numbers_are_a_plan_error_with_the_real_line_and_repo_unchanged(env):
+    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[edit(4, 4, "for x in xs[1:]:", "    for x in xs:")])]}))
     assert fix(ctx) == State.VERIFY
-    assert "not found" in ctx.run.fix["plan_errors"][0]
+    assert "line 4 is" in ctx.run.fix["plan_errors"][0] and "s += x" in ctx.run.fix["plan_errors"][0]
     assert env.read_file(f"{REPO_DIR}/lib.py") == LIB
 
 
@@ -228,7 +257,7 @@ def test_hang_repro_accepts_a_test_that_times_out_before_the_patch(env, monkeypa
     hang_lib = "def total(xs):\n    while True:\n        pass\n"
     sb = make_repo(env.root.parent / "h", {"lib.py": hang_lib, "tests/__init__.py": ""})
     ctx, _ = make(sb, FakeLLM({"super": [LOCATE, fix_plan(
-        edits=[{"path": "lib.py", "search": "    while True:\n        pass\n", "replace": "    return sum(xs)\n"}])]}))
+        edits=[edit(2, 3, "while True:", "    return sum(xs)")])]}))
     ctx.run.repro["classification"] = "hang"
     sb.write_file("/work/repro/repro_1.py", SCRIPT)
     assert run_fix_verify(ctx) == State.REPORT
@@ -254,3 +283,49 @@ def test_report_does_not_overwrite_needs_maintainer():
     ctx.run.repro = {"script": "s", "last_output": "o"}
     report(ctx)
     assert ctx.run.outcome == "NEEDS_MAINTAINER"
+
+
+def test_numbers_shown_to_the_model_match_the_numbers_used_to_edit(tmp_path):
+    """A form feed or other odd line separator inside a file must not shift the numbering."""
+    text = "def f():\n    a = '\x0c'\n    b = 1\n    return a\n"
+    sb = make_repo(tmp_path, {"m.py": text})
+    ctx, _ = make(sb, FakeLLM())
+    view = render_file(text, [], [])
+    assert "    3|     b = 1" in view
+    assert apply_edits(ctx, [edit(3, 3, "b = 1", "    b = 2", path="m.py")]) == []
+    assert sb.read_file(f"{REPO_DIR}/m.py") == text.replace("b = 1", "b = 2")
+
+
+def test_report_tidy_repairs_one_line_comments():
+    from itr.agent.stages.report import tidy
+    assert tidy("A`n```python`nx=1`n```") == "A\n```python\nx=1\n```"
+    assert tidy("A\\nB") == "A\nB"
+    ok = "a\nb\nc\nd with `n inside"
+    assert tidy(ok) == ok                       # real multi-line markdown is left alone
+
+
+def test_an_edit_that_breaks_indentation_is_caught_before_verify_and_names_the_line(env):
+    dedented = edit(3, 3, "for x in xs[1:]:", "for x in xs:")           # lost its 4-space indent
+    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[dedented])]}))
+    assert fix(ctx) == State.VERIFY
+    err = ctx.run.fix["plan_errors"][0]
+    assert "invalid Python" in err and "indentation" in err and "for x in xs:" in err
+    assert env.read_file(f"{REPO_DIR}/lib.py") == LIB and ctx.run.fix["patch"] == ""
+
+
+def test_a_repeated_patch_is_refused_with_the_earlier_failure(env):
+    weak = "def test_weak():\n    assert True\n"                         # fails VERIFY the same way each time
+    llm = FakeLLM({"super": [LOCATE, fix_plan(test_code=weak), LOCATE, fix_plan(test_code=weak)]})
+    ctx, _ = make(env, llm)
+    write_repro_script(env)
+    assert run_fix_verify(ctx) == State.FIX
+    assert fix(ctx) == State.VERIFY
+    assert "identical to the ones in attempt 1" in ctx.run.fix["plan_errors"][0]
+
+
+def test_plain_comment_does_not_repeat_the_title():
+    from itr.agent.stages.report import plain_comment
+    data = {"outcome": "CONFIRMED", "issue_title": "T", "reproduction": {"script": "s", "output": "o"},
+            "patch": "d", "test_path": "t.py", "test_code": "c"}
+    out = plain_comment(data)
+    assert out["comment"].count("T") == 0 and out["title"].startswith("Reproduced")
