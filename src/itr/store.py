@@ -162,6 +162,42 @@ class Store:
     def iter_events(self, run_id: str) -> Iterator[Event]:
         yield from self.events(run_id)
 
+    # ---- export / import (bundled demo runs) ---------------------------------
+    def export_run(self, run_id: str) -> dict:
+        """The run row plus all its events, as plain JSON-able data."""
+        run = self.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        return {"run": run, "events": [{"type": e.type, "payload": e.payload, "ts": e.ts}
+                                       for e in self.events(run_id)]}
+
+    def import_run(self, data: dict) -> str | None:
+        """Load an exported run under its original id. Returns the id, or None if it already exists."""
+        run = data["run"]
+        if self.get_run(run["id"]) is not None:
+            return None
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO runs (id, issue_url, state, created_at) VALUES (?, ?, 'queued', ?)",
+                (run["id"], run["issue_url"], run.get("created_at") or time.time()))
+        for ev in data["events"]:
+            self.append(run["id"], ev["type"], ev["payload"], ts=ev.get("ts"))
+        if self.get_run(run["id"])["state"] != "done":           # exported mid-run: close it cleanly
+            self.finish_run(run["id"], run.get("outcome") or "ERROR")
+        return run["id"]
+
+    def import_dir(self, folder: str | Path) -> list[str]:
+        """Import every *.json export in `folder` that is not loaded yet. Bad files are skipped."""
+        loaded: list[str] = []
+        for path in sorted(Path(folder).glob("*.json")):
+            try:
+                rid = self.import_run(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if rid:
+                loaded.append(rid)
+        return loaded
+
     # ---- derived view --------------------------------------------------------
     def summary(self, run_id: str) -> dict | None:
         """Final state for GET /runs/{id}: the run row plus what the events say.

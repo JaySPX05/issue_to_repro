@@ -88,3 +88,22 @@ def test_file_store_persists(tmp_path):
     rid = Store(path).create_run("u")
     Store(path).append(rid, "outcome", {"outcome": "NOT_REPRODUCED"})
     assert Store(path).get_run(rid)["outcome"] == "NOT_REPRODUCED"
+
+
+def test_export_import_roundtrip(store):
+    rid = store.create_run("u", run_id="r-1")
+    store.append(rid, "stage_started", {"stage": "FETCH"}, ts=100.0)
+    store.append(rid, "outcome", {"outcome": "CONFIRMED"}, ts=105.0)
+    data = store.export_run(rid)
+    other = Store(":memory:")
+    assert other.import_run(data) == "r-1" and other.import_run(data) is None
+    assert other.get_run("r-1")["outcome"] == "CONFIRMED"
+    assert [e.ts for e in other.events("r-1")] == [100.0, 105.0]
+
+
+def test_import_closes_an_unfinished_export(store):
+    rid = store.create_run("u", run_id="half")
+    store.append(rid, "stage_started", {"stage": "SETUP"})
+    other = Store(":memory:")
+    other.import_run(store.export_run(rid))
+    assert other.get_run("half")["state"] == "done" and other.get_run("half")["outcome"] == "ERROR"

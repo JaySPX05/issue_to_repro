@@ -16,6 +16,8 @@ Configuration (environment or .env, see .env.example):
     ITR_DB_PATH          default data/itr.db
     SANDBOX_BACKEND      docker (default) | nebius
     MAX_CONCURRENT_RUNS  default 2; further POST /runs get HTTP 429 (protects credits on a public demo)
+    ALLOW_NEW_RUNS       default true; false makes a public demo replay-only (POST /runs -> HTTP 403)
+    SEED_DIR             default <repo>/demo_runs; exported runs (*.json) loaded at startup
     WEB_DIR              default <repo>/web
 
 Run locally:  python -m itr.api            (http://127.0.0.1:8000)
@@ -61,7 +63,11 @@ def make_sandbox():
         from itr.sandbox.local_docker import LocalDockerSandbox
         return LocalDockerSandbox()
     if backend == "nebius":
-        from itr.sandbox.nebius import NebiusSandbox   # needs contree-sdk
+        try:
+            from itr.sandbox.nebius import NebiusSandbox
+        except ImportError as e:
+            raise RuntimeError("SANDBOX_BACKEND=nebius but src/itr/sandbox/nebius.py is not on this branch "
+                               f"or contree-sdk is not installed (pip install '.[nebius]'): {e}") from e
         return NebiusSandbox()
     raise ValueError(f"SANDBOX_BACKEND must be docker or nebius, not {backend!r}")
 
@@ -82,17 +88,32 @@ def _sse(data: dict, seq: int | None = None, event: str | None = None) -> str:
     return f"{head}data: {json.dumps(data, default=str)}\n\n"
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _flag(name: str, default: bool) -> bool:
+    raw = config.get(name)
+    return default if raw is None else raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def create_app(store: Store | None = None, run_fn: RunFn | None = None,
-               max_concurrent: int | None = None, web_dir: str | Path | None = None) -> FastAPI:
+               max_concurrent: int | None = None, web_dir: str | Path | None = None,
+               seed_dir: str | Path | None = None, allow_new_runs: bool | None = None) -> FastAPI:
     """Build the app. Tests pass an in-memory Store and a fake run_fn; production uses defaults."""
     config.load_env()
     store = store or Store(config.get("ITR_DB_PATH", "data/itr.db"))
     run_fn = run_fn or default_run_fn
     limit = max_concurrent or int(config.get("MAX_CONCURRENT_RUNS", "2") or 2)
+    allow_runs = _flag("ALLOW_NEW_RUNS", True) if allow_new_runs is None else allow_new_runs
     slots = threading.BoundedSemaphore(limit)
     interrupted = store.mark_interrupted()
     if interrupted:
         log.warning("marked %d unfinished run(s) as ERROR after restart", len(interrupted))
+    seeds = Path(seed_dir or config.get("SEED_DIR") or REPO_ROOT / "demo_runs")
+    if seeds.is_dir():
+        loaded = store.import_dir(seeds)
+        if loaded:
+            log.info("loaded %d bundled run(s) from %s", len(loaded), seeds)
 
     app = FastAPI(title="Issue-to-Repro", version="0.1.0")
     app.state.store = store
@@ -123,10 +144,12 @@ def create_app(store: Store | None = None, run_fn: RunFn | None = None,
     # ---- routes -----------------------------------------------------------------------
     @app.get("/health")
     def health() -> dict:
-        return {"ok": True}
+        return {"ok": True, "new_runs": allow_runs}
 
     @app.post("/runs")
     def start_run(req: RunRequest) -> dict:
+        if not allow_runs:
+            raise HTTPException(403, "This demo is replay-only: pick a previous run and press Replay")
         url = req.issue_url.strip()
         if not ISSUE_URL.match(url):
             raise HTTPException(422, "issue_url must look like https://github.com/OWNER/REPO/issues/123")
@@ -201,7 +224,7 @@ def create_app(store: Store | None = None, run_fn: RunFn | None = None,
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     # ---- static UI (mounted last so the API routes win) -------------------------------
-    web = Path(web_dir or config.get("WEB_DIR") or Path(__file__).resolve().parents[2] / "web")
+    web = Path(web_dir or config.get("WEB_DIR") or REPO_ROOT / "web")
     if web.is_dir():
         from fastapi.staticfiles import StaticFiles
         app.mount("/", StaticFiles(directory=str(web), html=True), name="web")

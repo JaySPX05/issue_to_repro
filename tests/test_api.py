@@ -29,7 +29,8 @@ def fake_run(run_id, issue_url, emit):
 
 def make(run_fn=fake_run, **kw):
     store = Store(":memory:")
-    return TestClient(api.create_app(store=store, run_fn=run_fn, web_dir="/nonexistent", **kw)), store
+    return TestClient(api.create_app(store=store, run_fn=run_fn, web_dir="/nonexistent",
+                                      seed_dir="/nonexistent", **kw)), store
 
 
 def wait_done(store, run_id, timeout=5.0):
@@ -63,7 +64,7 @@ def read_sse(client, path, headers=None):
 
 def test_health():
     client, _ = make()
-    assert client.get("/health").json() == {"ok": True}
+    assert client.get("/health").json() == {"ok": True, "new_runs": True}
 
 
 def test_post_runs_validates_url():
@@ -203,3 +204,26 @@ def test_make_sandbox_rejects_unknown_backend(monkeypatch):
     monkeypatch.setenv("SANDBOX_BACKEND", "bogus")
     with pytest.raises(ValueError, match="docker or nebius"):
         api.make_sandbox()
+
+
+def test_replay_only_mode_refuses_new_runs():
+    client, _ = make(allow_new_runs=False)
+    r = client.post("/runs", json={"issue_url": URL})
+    assert r.status_code == 403 and "replay-only" in r.json()["detail"]
+    assert client.get("/health").json() == {"ok": True, "new_runs": False}
+
+
+def test_bundled_runs_are_loaded_at_startup(tmp_path):
+    src = Store(":memory:")
+    rid = src.create_run(URL, run_id="demo-1")
+    fake_run(rid, URL, src.emitter(rid))
+    (tmp_path / "demo-1.json").write_text(json.dumps(src.export_run(rid)))
+    (tmp_path / "broken.json").write_text("{not json")
+    store = Store(":memory:")
+    client = TestClient(api.create_app(store=store, run_fn=fake_run, web_dir="/nonexistent", seed_dir=tmp_path))
+    s = client.get("/runs/demo-1").json()
+    assert s["outcome"] == "NEEDS_MAINTAINER" and s["tokens"] == {"nano": 1500}
+    msgs, ended = read_sse(client, "/runs/demo-1/events")
+    assert ended and len(msgs) == 7
+    api.create_app(store=store, run_fn=fake_run, web_dir="/nonexistent", seed_dir=tmp_path)
+    assert len(store.events("demo-1")) == 7          # loading twice does not duplicate

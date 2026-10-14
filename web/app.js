@@ -436,7 +436,15 @@ window.addEventListener("popstate", () => {
 });
 
 // Boot: open ?run=<id> if present, so a link to a run shows that run.
-(() => {
+(async () => {
+  try {
+    const health = await api("/health");
+    if (health.new_runs === false) {               // public demo in replay-only mode
+      $("issue-url").disabled = true;
+      $("run-btn").disabled = true;
+      $("issue-url").placeholder = "Replay-only demo: pick a previous run on the right, then press Replay";
+    }
+  } catch { /* server unreachable: the stream will report it */ }
   const id = new URLSearchParams(location.search).get("run");
   if (id) openRun(id, false);
   loadHistory();
