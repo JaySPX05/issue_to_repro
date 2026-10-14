@@ -5,3 +5,6 @@ __pycache__/
 *.sqlite
 *.egg-info/
 .pytest_cache/
+
+# local run database
+data/

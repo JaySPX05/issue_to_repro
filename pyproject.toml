@@ -7,7 +7,8 @@ license = { text = "MIT" }
 dependencies = ["jsonschema>=4"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "httpx>=0.27"]
+web = ["fastapi>=0.110", "uvicorn>=0.27"]
 
 [build-system]
 requires = ["setuptools>=61"]
