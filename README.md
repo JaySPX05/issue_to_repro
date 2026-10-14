@@ -8,7 +8,7 @@ really matches the report, and only then proposes a fix. A fix counts only if it
 **fails on the original code and passes on the patched code**, which is checked by running it, never
 by asking a model.
 
-- **Live demo:** _add the Render URL here_
+- **Live demo:** https://issuetorepro.vercel.app
 - **Demo video (< 3 min):** _add the YouTube link here_
 - **Built for:** NVIDIA × Nebius Hackathon, Coding and Agentic Engineering track
 - **License:** MIT
@@ -147,6 +147,8 @@ Open the page, paste a GitHub issue URL (for example `https://github.com/pallets
 | `ITR_DB_PATH` | `data/itr.db` | SQLite file for runs and events |
 | `MAX_CONCURRENT_RUNS` | 2 | Further runs get HTTP 429 |
 | `ALLOW_NEW_RUNS` | `true` | `false` makes a public demo replay-only |
+| `RUN_MODE` | `background` (`inline` on Vercel) | `inline` runs each job inside the request that streams it |
+| `RUN_MAX_SECONDS` | 900 (270 inline) | Time budget per run |
 | `GITHUB_TOKEN` | (optional) | Higher GitHub API rate limit |
 
 ## API
@@ -157,20 +159,29 @@ Open the page, paste a GitHub issue URL (for example `https://github.com/pallets
 | `GET` | `/runs/{id}/events` | Server-sent events: stored events, then live ones; resumes with `Last-Event-ID` |
 | `GET` | `/runs/{id}` | Final state: stages, artifacts, tokens per tier, cost, outcome |
 | `POST` | `/runs/{id}/replay?speed=4` | Re-streams a finished run as a new run, without any model call |
+| `GET` | `/runs/live?issue_url=...` | Starts a run and streams it in the same request (serverless hosts) |
+| `GET` | `/runs/{id}/replay-stream?speed=4` | Replays a finished run in one request, writing nothing |
 | `GET` | `/runs` | Recent runs |
 
 ## Deploy
 
-The `Dockerfile` serves the API and UI on one port and defaults to Nebius Sandboxes.
+**Vercel (our hosted demo).** Import this repo at vercel.com → New Project; Vercel finds the FastAPI
+`app` in `app.py` and the 300-second limit in `vercel.json`. Add `NEBIUS_API_KEY`, `NEBIUS_PROJECT_ID`
+and the three `MODEL_*` variables under Settings → Environment Variables, then deploy.
+
+Vercel functions keep nothing between requests and stop after 5 minutes on the free plan, so `app.py`
+switches the app to single-request mode: a run lives inside the request that streams it to the browser,
+with a 270-second time budget so it ends cleanly before the platform limit. Real runs saved with
+`python scripts/export_run.py <run_id> <name>` into `demo_runs/` are loaded by every new instance, so the
+demo always has finished runs to open and replay.
+
+**Docker (any container host, or locally).** The `Dockerfile` serves the API and UI on one port and
+defaults to Nebius Sandboxes:
 
 ```bash
 docker build -t issue-to-repro .
 docker run -p 7860:7860 --env-file .env issue-to-repro
 ```
-
-Our demo runs on **Render** (free plan, Docker): New → Web Service → this repo → set the variables above.
-Real runs saved with `python scripts/export_run.py <run_id> <name>` into `demo_runs/` are loaded at startup,
-so the demo always has finished runs to replay.
 
 ## Project layout
 
