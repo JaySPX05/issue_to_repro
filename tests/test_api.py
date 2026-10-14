@@ -64,7 +64,7 @@ def read_sse(client, path, headers=None):
 
 def test_health():
     client, _ = make()
-    assert client.get("/health").json() == {"ok": True, "new_runs": True}
+    assert client.get("/health").json() == {"ok": True, "new_runs": True, "mode": "background"}
 
 
 def test_post_runs_validates_url():
@@ -210,7 +210,7 @@ def test_replay_only_mode_refuses_new_runs():
     client, _ = make(allow_new_runs=False)
     r = client.post("/runs", json={"issue_url": URL})
     assert r.status_code == 403 and "replay-only" in r.json()["detail"]
-    assert client.get("/health").json() == {"ok": True, "new_runs": False}
+    assert client.get("/health").json() == {"ok": True, "new_runs": False, "mode": "background"}
 
 
 def test_bundled_runs_are_loaded_at_startup(tmp_path):
@@ -227,3 +227,76 @@ def test_bundled_runs_are_loaded_at_startup(tmp_path):
     assert ended and len(msgs) == 7
     api.create_app(store=store, run_fn=fake_run, web_dir="/nonexistent", seed_dir=tmp_path)
     assert len(store.events("demo-1")) == 7          # loading twice does not duplicate
+
+
+# ---- single-request mode (serverless hosts such as Vercel) ---------------------------------
+
+def read_sse_events(client, path):
+    """Like read_sse but also returns named events: [(event_name or None, data), ...]."""
+    out, event = [], None
+    with client.stream("GET", path) as r:
+        assert r.status_code == 200
+        for line in r.iter_lines():
+            if line.startswith("event: "):
+                event = line[7:]
+            elif line.startswith("data: "):
+                out.append((event, json.loads(line[6:])))
+                if event in ("end", "fail"):
+                    break
+            elif line == "":
+                event = None
+    return out
+
+
+def test_live_run_starts_and_streams_in_one_request():
+    client, store = make()
+    msgs = read_sse_events(client, f"/runs/live?issue_url={URL}")
+    assert msgs[-1][0] == "end"
+    data = [d for e, d in msgs if e is None]
+    assert [d["type"] for d in data][-1] == "outcome" and len(data) == 7
+    assert store.get_run(data[0]["run_id"])["outcome"] == "NEEDS_MAINTAINER"
+
+
+def test_live_run_reports_refusals_as_a_fail_event():
+    client, _ = make()
+    (event, data), = read_sse_events(client, "/runs/live?issue_url=https://example.com/x")
+    assert event == "fail" and data["status"] == 422
+    client2, _ = make(allow_new_runs=False)
+    (event, data), = read_sse_events(client2, f"/runs/live?issue_url={URL}")
+    assert event == "fail" and data["status"] == 403
+
+
+def test_live_run_is_closed_at_the_platform_deadline(monkeypatch):
+    monkeypatch.setenv("INLINE_DEADLINE_S", "0.5")
+    gate = threading.Event()
+
+    def stuck(run_id, issue_url, emit):
+        emit("stage_started", {"stage": "SETUP"})
+        gate.wait(5)
+
+    client, store = make(stuck)
+    msgs = read_sse_events(client, f"/runs/live?issue_url={URL}")
+    gate.set()
+    outcome = [d for e, d in msgs if e is None and d["type"] == "outcome"][0]
+    assert outcome["payload"]["outcome"] == "ERROR" and "time limit" in outcome["payload"]["reason"]
+
+
+def test_replay_stream_writes_nothing():
+    client, store = make()
+    rid = client.post("/runs", json={"issue_url": URL}).json()["run_id"]
+    wait_done(store, rid)
+    before = len(store.list_runs())
+    msgs = read_sse_events(client, f"/runs/{rid}/replay-stream?speed=0")
+    data = [d for e, d in msgs if e is None]
+    assert [d["type"] for d in data] == [e.type for e in store.events(rid)]
+    assert data[-1]["replay_of"] == rid and data[4]["cost_usd"] > 0
+    assert len(store.list_runs()) == before
+    assert client.get("/runs/missing/replay-stream").status_code == 404
+
+
+def test_inline_mode_is_reported_and_sets_a_time_budget(monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "inline")
+    monkeypatch.delenv("RUN_MAX_SECONDS", raising=False)
+    client, _ = make()
+    assert client.get("/health").json()["mode"] == "inline"
+    assert api.config.get("RUN_MAX_SECONDS") == "270"

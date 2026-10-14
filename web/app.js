@@ -379,20 +379,46 @@ async function api(path, opts = {}) {
   return body;
 }
 
+let MODE = "background";   // "inline" on serverless hosts (Vercel): runs and replays live inside one request
+
 function openRun(runId, push = true) {
-  if (source) source.close();
-  S = freshState(runId);
-  $("replay-btn").disabled = true;
   if (push) history.pushState({ runId }, "", `?run=${encodeURIComponent(runId)}`);
+  openStream(`/runs/${encodeURIComponent(runId)}/events`, runId, { resumable: true });
+}
+
+/* Open an SSE stream and render it. A resumable stream may reconnect (the server resumes after
+   Last-Event-ID). A single-request stream must NOT reconnect: reopening /runs/live would start a
+   second, paid run, so on any error it is closed instead. */
+function openStream(url, label, { resumable = false } = {}) {
+  if (source) source.close();
+  S = freshState(label);
+  $("replay-btn").disabled = true;
   renderNow();
   startClock();
-  source = new EventSource(`/runs/${encodeURIComponent(runId)}/events`);
-  source.onmessage = (m) => { apply(JSON.parse(m.data)); render(); };
-  source.addEventListener("end", () => {
-    source.close(); source = null; stopClock(); render();
+  const es = new EventSource(url);
+  source = es;
+  let finished = false;
+  const finish = () => {
+    finished = true; es.close();
+    if (source === es) source = null;
+    stopClock(); render();
     $("replay-btn").disabled = false; loadHistory();
-  });
-  source.onerror = () => { if (source && source.readyState === EventSource.CLOSED) toast("Lost connection to the server."); };
+  };
+  es.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (S.runId === "starting…" && ev.run_id) {          // a live run learns its id from the first event
+      S.runId = ev.run_id;
+      if (MODE !== "inline") history.replaceState({ runId: ev.run_id }, "", `?run=${encodeURIComponent(ev.run_id)}`);
+    }
+    apply(ev); render();
+  };
+  es.addEventListener("end", finish);
+  es.addEventListener("fail", (m) => { toast(JSON.parse(m.data).detail || "The run could not start."); finish(); });
+  es.onerror = () => {
+    if (finished) return;
+    if (!resumable) { toast("Connection to the server was lost."); finish(); }
+    else if (es.readyState === EventSource.CLOSED) toast("Lost connection to the server.");
+  };
 }
 
 async function loadHistory() {
@@ -411,10 +437,15 @@ $("run-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = $("run-btn");
   btn.disabled = true;
+  const url = $("issue-url").value.trim();
   try {
-    const { run_id } = await api("/runs", { method: "POST", body: JSON.stringify({ issue_url: $("issue-url").value.trim() }) });
-    openRun(run_id);
-    loadHistory();
+    if (MODE === "inline") {
+      openStream(`/runs/live?issue_url=${encodeURIComponent(url)}`, "starting…");
+    } else {
+      const { run_id } = await api("/runs", { method: "POST", body: JSON.stringify({ issue_url: url }) });
+      openRun(run_id);
+      loadHistory();
+    }
   } catch (err) { toast(err.message); }
   finally { btn.disabled = false; }
 });
@@ -424,9 +455,13 @@ $("history").addEventListener("change", (e) => { if (e.target.value) openRun(e.t
 $("replay-btn").addEventListener("click", async () => {
   if (!S) return;
   try {
-    const { run_id } = await api(`/runs/${encodeURIComponent(S.runId)}/replay?speed=4`, { method: "POST" });
-    openRun(run_id);
-    loadHistory();
+    if (MODE === "inline") {
+      openStream(`/runs/${encodeURIComponent(S.runId)}/replay-stream?speed=4`, S.runId);
+    } else {
+      const { run_id } = await api(`/runs/${encodeURIComponent(S.runId)}/replay?speed=4`, { method: "POST" });
+      openRun(run_id);
+      loadHistory();
+    }
   } catch (err) { toast(err.message); }
 });
 
@@ -439,6 +474,7 @@ window.addEventListener("popstate", () => {
 (async () => {
   try {
     const health = await api("/health");
+    MODE = health.mode || "background";
     if (health.new_runs === false) {               // public demo in replay-only mode
       $("issue-url").disabled = true;
       $("run-btn").disabled = true;

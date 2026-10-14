@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-*
+tests/
+eval/
+scripts/
+probe.json
+verdicts.json
+.pytest_cache
+**/__pycache__
+Dockerfile
+.dockerignore
