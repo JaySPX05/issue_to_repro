@@ -5,8 +5,10 @@ __pycache__/
 *.sqlite
 *.egg-info/
 .pytest_cache/
-
 live_runs/
 probe.json
 verdicts.json
 results.json
+# local run database
+data/
+

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Issue-to-Repro</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">⟲</span>
+      <div>
+        <h1>Issue-to-Repro</h1>
+        <p class="tag">Nemotron on Nebius Token Factory · reproduce, patch, verify</p>
+      </div>
+    </div>
+
+    <form id="run-form" class="run-form" autocomplete="off">
+      <input id="issue-url" type="url" required
+             placeholder="https://github.com/owner/repo/issues/123" aria-label="GitHub issue URL">
+      <button type="submit" id="run-btn">Run</button>
+    </form>
+
+    <div class="history">
+      <select id="history" aria-label="Previous runs"><option value="">Previous runs…</option></select>
+      <button id="replay-btn" class="ghost" disabled title="Re-stream this run without calling any model">Replay</button>
+    </div>
+  </header>
+
+  <section class="meters" id="meters" aria-label="Model usage">
+    <div class="meter tier" data-tier="nano"><span class="k">nano</span><span class="v" id="m-nano">0</span><span class="u">tok</span></div>
+    <div class="meter tier" data-tier="super"><span class="k">super</span><span class="v" id="m-super">0</span><span class="u">tok</span></div>
+    <div class="meter tier" data-tier="ultra"><span class="k">ultra</span><span class="v" id="m-ultra">0</span><span class="u">tok</span></div>
+    <div class="meter"><span class="k">model calls</span><span class="v" id="m-calls">0</span></div>
+    <div class="meter"><span class="k">commands</span><span class="v" id="m-cmds">0</span></div>
+    <div class="meter"><span class="k">cost</span><span class="v" id="m-cost">$0.0000</span></div>
+    <div class="meter"><span class="k">elapsed</span><span class="v" id="m-time">0s</span></div>
+    <div class="meter run-id"><span class="k">run</span><span class="v" id="m-run">—</span></div>
+  </section>
+
+  <main class="layout">
+    <aside class="timeline" aria-label="Stages">
+      <div id="outcome" class="outcome hidden"></div>
+      <ol id="stages" class="stages"></ol>
+    </aside>
+
+    <section class="viewer" aria-label="Artifacts">
+      <nav id="tabs" class="tabs" role="tablist"></nav>
+      <div id="pane" class="pane">
+        <div class="empty">
+          <p>Paste a GitHub issue URL and press <b>Run</b>.</p>
+          <p class="muted">The agent fetches the issue, writes a reproduction script, runs it in a sandbox,
+            asks a separate model whether the failure matches the report, and only then proposes a patch
+            that must fail before and pass after.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>
