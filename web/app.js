@@ -1,40 +1,60 @@
 /* Issue-to-Repro UI. Plain JS, no build step. Everything is rendered from the run's event stream
-   (GET /runs/{id}/events). All text from issues/models is inserted with textContent, never as HTML. */
+   (GET /runs/{id}/events). All text from issues and models is inserted as text nodes, never as HTML.
+
+   The stage list is the navigation: every artifact, sandbox command and model call is filed under the
+   stage (and the attempt of that stage) that produced it, and the right pane shows the selected stage.
+   While a run is live the selection follows the running stage, until the viewer picks one. */
 "use strict";
 
 const STAGES = [
-  { id: "FETCH",   label: "Fetch issue",     desc: "Read the GitHub issue",                  tier: null },
-  { id: "TRIAGE",  label: "Triage",          desc: "Bug, feature or question?",              tier: "nano" },
-  { id: "SETUP",   label: "Set up sandbox",  desc: "Clone, pick version, install",           tier: "super" },
-  { id: "REPRO",   label: "Reproduce",       desc: "Write and run a failing script",         tier: "super" },
-  { id: "VERDICT", label: "Verdict",         desc: "Does the failure match the report?",     tier: "ultra" },
-  { id: "FIX",     label: "Fix",             desc: "Root cause, patch and regression test",  tier: "super → ultra" },
-  { id: "VERIFY",  label: "Verify",          desc: "Test fails before, passes after",        tier: "no model" },
-  { id: "REPORT",  label: "Report",          desc: "Draft the comment for the issue",        tier: "nano" },
+  { id: "FETCH",   label: "Fetch issue",    desc: "Read the issue from GitHub",              tier: null },
+  { id: "TRIAGE",  label: "Triage",         desc: "Is it a bug, a feature or a question?",   tier: "nano" },
+  { id: "SETUP",   label: "Set up sandbox", desc: "Clone, pick the version, install",        tier: "super" },
+  { id: "REPRO",   label: "Reproduce",      desc: "Write a script that fails while the bug exists", tier: "super" },
+  { id: "VERDICT", label: "Verdict",        desc: "A separate judge: is it the reported failure?", tier: "ultra" },
+  { id: "FIX",     label: "Fix",            desc: "Root cause, patch and regression test",   tier: "super → ultra" },
+  { id: "VERIFY",  label: "Verify",         desc: "Fails before the patch, passes after",    tier: null },
+  { id: "REPORT",  label: "Report",         desc: "Draft the comment for the issue",         tier: "nano" },
+];
+const STAGE = Object.fromEntries(STAGES.map((s) => [s.id, s]));
+
+const OUTCOME = {
+  CONFIRMED:        { title: "Confirmed",        text: "Bug reproduced, and a patch passed every check.", icon: "check" },
+  NOT_REPRODUCED:   { title: "Not reproduced",   text: "The failure could not be reproduced; the author is asked for details.", icon: "help" },
+  NEEDS_MAINTAINER: { title: "Needs a maintainer", text: "Not a bug to fix automatically, or no patch could be verified.", icon: "user" },
+  SETUP_FAILED:     { title: "Setup failed",     text: "The project could not be installed in the sandbox.", icon: "x" },
+  ERROR:            { title: "Run stopped",      text: "The run ended early.", icon: "alert" },
+};
+
+const EXAMPLES = [
+  { url: "https://github.com/pallets/click/issues/2877", t: "click #2877", d: "A BytesWarning that only appears with python -bb. Known fix exists." },
+  { url: "https://github.com/astanin/python-tabulate/issues/399", t: "tabulate #399", d: "A call that never returns. The agent must recognise a hang." },
+  { url: "https://github.com/pallets/click/issues/1629", t: "click #1629", d: "A feature request. The right answer is to stop at triage, not to patch." },
 ];
 
-const TAB_LABELS = {
-  terminal: "Terminal", issue: "Issue", triage: "Triage", ref_choice: "Version", setup_plan: "Setup plan",
-  environment: "Environment", environment_degraded: "Environment", environment_failed: "Setup failed",
-  repro_script: "Repro script", repro_result: "Repro output", repo_modified_by_script: "Repo changes",
-  repro_gave_up: "Gave up", verdict: "Verdict", fix_locate: "Located files", fix_plan: "Patch",
-  verify_failed: "Verification", verify_passed: "Verification", report: "Final comment",
+/* ---- icons: one stroke family, drawn here ------------------------------------------------------ */
+const ICON = {
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  alert: '<path d="M12 8v5"/><path d="M12 16.5v.01"/>',
+  help: '<path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7"/><path d="M12 17v.01"/>',
+  user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c1-3.5 3.8-5.5 7-5.5s6 2 7 5.5"/>',
+  spin: '<path d="M12 3a9 9 0 1 0 9 9"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  chev: '<path d="M9 6l6 6-6 6"/>',
+  ext: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>',
+  live: '<circle cx="12" cy="12" r="3"/><path d="M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/>',
 };
-// A few artifact names share one tab (latest wins).
-const TAB_KEY = { environment_degraded: "environment", environment_failed: "environment",
-                  verify_failed: "verify", verify_passed: "verify" };
-
-const OUTCOME_TEXT = {
-  CONFIRMED: "Bug reproduced, patch verified",
-  NOT_REPRODUCED: "Could not reproduce — asking the author for details",
-  NEEDS_MAINTAINER: "Needs a maintainer",
-  SETUP_FAILED: "Could not set up the project",
-  ERROR: "Run stopped",
-};
+function icon(name, cls = "i") {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("class", cls); s.setAttribute("aria-hidden", "true");
+  s.innerHTML = ICON[name];                 // static markup from the table above, never user data
+  return s;
+}
 
 const $ = (id) => document.getElementById(id);
 
-/* ---- tiny DOM helper ------------------------------------------------------------------- */
+/* ---- tiny DOM helper ------------------------------------------------------------------------- */
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -51,8 +71,11 @@ function h(tag, attrs = {}, ...kids) {
 }
 const fmtTok = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n);
 const asText = (v) => typeof v === "string" ? v : JSON.stringify(v, null, 2);
+const asList = (v) => Array.isArray(v) ? v : (v ? [v] : []);
+const fmtSecs = (s) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/* ---- state ------------------------------------------------------------------------------ */
+/* ---- state ------------------------------------------------------------------------------------- */
 let S = null;          // per-run state
 let source = null;     // EventSource
 let clock = null;
@@ -61,11 +84,16 @@ function freshState(runId) {
   return {
     runId, stages: {}, order: [], current: null, outcome: null, reason: null,
     tokens: { nano: 0, super: 0, ultra: 0 }, calls: 0, cmds: 0, cost: 0,
-    firstTs: null, lastTs: null, commands: [], tabs: new Map(), active: null, follow: true, unseen: new Set(),
+    firstTs: null, lastTs: null, selected: null, pinned: false,
+    trace: { stages: [], calls: [], cmds: [], marks: [] },
   };
 }
+function currentRun() {
+  const st = S.current && S.stages[S.current];
+  return st ? st.runs[st.runs.length - 1] : null;
+}
 
-/* ---- event handling --------------------------------------------------------------------- */
+/* ---- event handling ---------------------------------------------------------------------------- */
 function apply(ev) {
   const p = ev.payload || {};
   S.firstTs ??= ev.ts;
@@ -74,48 +102,68 @@ function apply(ev) {
 
   switch (ev.type) {
     case "stage_started": {
-      const st = (S.stages[p.stage] ??= { status: "pending", runs: 0, calls: {}, error: null });
-      st.status = "running"; st.runs += 1; st.error = null;
+      const st = (S.stages[p.stage] ??= { status: "pending", runs: [] });
+      st.status = "running";
+      st.runs.push({ items: [], calls: {}, error: null, status: "running" });
       S.current = p.stage;
       if (!S.order.includes(p.stage)) S.order.push(p.stage);
+      const open = S.trace.stages[S.trace.stages.length - 1];
+      if (open && open.end == null) open.end = ev.ts;
+      S.trace.stages.push({ id: p.stage, start: ev.ts, end: null, status: "running" });
+      if (!S.pinned) S.selected = p.stage;
       break;
     }
     case "stage_finished": {
       const st = S.stages[p.stage];
-      if (st) { st.status = p.error ? "failed" : "done"; st.error = p.error || null; }
+      if (st) {
+        const run = st.runs[st.runs.length - 1];
+        st.status = p.error ? "failed" : "done";
+        if (run) { run.status = st.status; run.error = p.error || null; run.next = p.next || null; }
+      }
+      const band = [...S.trace.stages].reverse().find((b) => b.id === p.stage && b.end == null);
+      if (band) { band.end = ev.ts; band.status = p.error ? "failed" : "done"; }
       break;
     }
     case "model_call": {
       S.calls += 1;
       if (p.tier in S.tokens) S.tokens[p.tier] += (p.tokens_in || 0) + (p.tokens_out || 0);
-      const st = S.current && S.stages[S.current];
-      if (st) st.calls[p.tier] = (st.calls[p.tier] || 0) + 1;
-      flash(p.tier);
+      const run = currentRun();
+      if (run) run.calls[p.tier] = (run.calls[p.tier] || 0) + 1;
+      const prev = S.trace.calls.length ? S.trace.calls[S.trace.calls.length - 1].end : S.firstTs;
+      const band = S.trace.stages[S.trace.stages.length - 1];
+      const floor = Math.max(prev, band ? band.start : S.firstTs);       // a call never starts before its stage
+      S.trace.calls.push({ start: Math.max(floor, ev.ts - (p.latency_ms || 0) / 1000), end: ev.ts, tier: p.tier });
+      pulse(p.tier);
       break;
     }
-    case "command_run":
+    case "command_run": {
       S.cmds += 1;
-      S.commands.push(p);
-      upsertTab("terminal", p);
+      const run = currentRun();
+      if (run) run.items.push({ kind: "cmd", ...p });
+      S.trace.cmds.push({ ts: ev.ts, failed: Boolean(p.timed_out || p.exit_code !== 0) });
       break;
-    case "artifact":
-      if (p.name) upsertTab(TAB_KEY[p.name] || p.name, { name: p.name, content: p.content });
+    }
+    case "artifact": {
+      const run = currentRun();
+      if (run && p.name) run.items.push({ kind: "artifact", name: p.name, content: p.content });
+      if (p.name === "verify_failed") S.trace.marks.push({ ts: ev.ts, kind: "reject" });
+      if (p.name === "verified_fix") S.trace.marks.push({ ts: ev.ts, kind: "pass" });
+      if (p.name === "repro_result" && ["failed", "hang"].includes((p.content || {}).classification)) S.trace.marks.push({ ts: ev.ts, kind: "repro" });
       break;
+    }
     case "outcome":
       S.outcome = p.outcome; S.reason = p.reason || null;
-      for (const s of Object.values(S.stages)) if (s.status === "running") s.status = "done";
+      for (const st of Object.values(S.stages)) {
+        if (st.status === "running") { st.status = "done"; st.runs[st.runs.length - 1].status = "done"; }
+      }
+      for (const b of S.trace.stages) if (b.end == null) { b.end = ev.ts; b.status = "done"; }
+      if (!S.pinned) S.selected = S.order.includes("REPORT") ? "REPORT" : S.order[S.order.length - 1] || null;
       stopClock();
       break;
   }
 }
 
-function upsertTab(key, value) {
-  S.tabs.set(key, value);
-  if (S.follow) S.active = key;
-  else if (key !== S.active) S.unseen.add(key);
-}
-
-/* ---- rendering -------------------------------------------------------------------------- */
+/* ---- rendering ----------------------------------------------------------------------------------- */
 let renderQueued = false;
 function render() {
   if (renderQueued) return;
@@ -124,36 +172,87 @@ function render() {
 }
 
 function renderNow() {
-  if (!S) return;
+  if (!S) { renderEmpty(); return; }
+  renderRunCard();
   renderMeters();
-  renderStages();
+  renderTrace();
   renderOutcome();
-  renderTabs();
+  renderStages();
   renderPane();
 }
 
+
+function renderRunCard() {
+  const card = $("runcard");
+  if (!S) { card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+  const issue = lastArtifact("issue") || {};
+  const url = issue.url || S.issueUrl || "";
+  const short = url.replace("https://github.com/", "").replace("/issues/", " #");
+  const repo = $("run-repo");
+  repo.textContent = short || "GitHub issue";
+  if (url) repo.setAttribute("href", url); else repo.removeAttribute("href");
+  $("run-title").textContent = issue.title || (S.outcome ? "Issue" : "Reading the issue…");
+  const st = $("run-state");
+  if (S.outcome) {
+    const o = OUTCOME[S.outcome] || { title: S.outcome, icon: "alert" };
+    const tone = { CONFIRMED: "good", NOT_REPRODUCED: "warn", NEEDS_MAINTAINER: "info" }[S.outcome] || "bad";
+    st.className = `pill ${tone}`; st.replaceChildren(icon(o.icon), o.title);
+  } else {
+    st.className = "pill info live";
+    st.replaceChildren(S.current ? `Running: ${(STAGE[S.current] || {}).label || S.current}` : "Starting");
+  }
+}
+
 function renderMeters() {
-  for (const t of ["nano", "super", "ultra"]) $(`m-${t}`).textContent = fmtTok(S.tokens[t]);
-  $("m-calls").textContent = S.calls;
-  $("m-cmds").textContent = S.cmds;
-  $("m-cost").textContent = "$" + S.cost.toFixed(4);
-  $("m-run").textContent = S.runId;
+  const t = S ? S.tokens : { nano: 0, super: 0, ultra: 0 };
+  const total = t.nano + t.super + t.ultra;
+  for (const tier of ["nano", "super", "ultra"]) {
+    $(`m-${tier}`).textContent = fmtTok(t[tier]);
+    $("split-bar").querySelector(`.seg.${tier}`).style.width = total ? `${(t[tier] / total) * 100}%` : "0";
+  }
+  $("split-bar").setAttribute("aria-label",
+    total ? `Tokens by tier: nano ${t.nano}, super ${t.super}, ultra ${t.ultra}` : "No model calls yet");
+  $("m-tokens").textContent = `${total.toLocaleString()} tokens`;
+  $("m-calls").textContent = S ? S.calls : 0;
+  $("m-cmds").textContent = S ? S.cmds : 0;
+  $("m-cost").textContent = "$" + (S ? S.cost : 0).toFixed(4);
+  $("m-run").textContent = S ? S.runId : "none";
   tickClock();
 }
 
 function tickClock() {
   if (!S || S.firstTs == null) { $("m-time").textContent = "0s"; return; }
   const end = S.outcome ? S.lastTs : Math.max(S.lastTs, Date.now() / 1000);
-  const s = Math.max(0, Math.round(end - S.firstTs));
-  $("m-time").textContent = s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
+  $("m-time").textContent = fmtSecs(Math.max(0, Math.round(end - S.firstTs)));
+  if (!S.outcome) renderTrace();
 }
 function startClock() { stopClock(); clock = setInterval(tickClock, 1000); }
 function stopClock() { if (clock) clearInterval(clock); clock = null; }
 
-function flash(tier) {
-  const el = document.querySelector(`.meter[data-tier="${tier}"]`);
+function pulse(tier) {
+  const el = document.querySelector(`.legend .t-${tier}`);
   if (!el) return;
-  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  el.classList.remove("pulse"); void el.offsetWidth; el.classList.add("pulse");
+}
+
+function renderOutcome() {
+  const box = $("outcome");
+  if (!S.outcome) { box.className = "outcome hidden"; box.replaceChildren(); return; }
+  const o = OUTCOME[S.outcome] || { title: S.outcome, text: "", icon: "alert" };
+  const secs = S.firstTs != null ? Math.round(S.lastTs - S.firstTs) : null;
+  box.className = `outcome o-${S.outcome}`;
+  box.replaceChildren(
+    h("h2", {}, icon(o.icon), o.title),
+    h("p", {}, S.reason || o.text),
+    h("p", { class: "meta num" }, [secs != null ? `${fmtSecs(secs)}` : null, `$${S.cost.toFixed(4)}`,
+      plural(S.calls, "model call")].filter(Boolean).join(" · ")));
+}
+
+function stageStatus(id) {
+  const st = S.stages[id];
+  if (st) return st.status;
+  return S.outcome ? "skipped" : "pending";
 }
 
 function renderStages() {
@@ -161,208 +260,433 @@ function renderStages() {
   ol.replaceChildren();
   STAGES.forEach((def, i) => {
     const st = S.stages[def.id];
-    let status = st ? st.status : "pending";
-    if (!st && S.outcome) status = "skipped";
-    const dot = status === "done" ? "✓" : status === "failed" ? "!" : String(i + 1);
-    const chips = [];
-    if (def.tier) chips.push(h("span", { class: "chip" + (def.tier in S.tokens ? ` tier-${def.tier}` : "") }, def.tier));
+    const status = stageStatus(def.id);
+    const mark = status === "done" ? icon("check") : status === "failed" ? icon("x")
+      : status === "running" ? icon("spin") : String(i + 1);
+    const meta = [];
     if (st) {
-      for (const [tier, n] of Object.entries(st.calls)) chips.push(h("span", { class: `chip tier-${tier}` }, `${n}× ${tier}`));
-      if (st.runs > 1) chips.push(h("span", { class: "chip" }, `attempt ${st.runs}`));
+      const calls = {};
+      for (const r of st.runs) for (const [tier, n] of Object.entries(r.calls)) calls[tier] = (calls[tier] || 0) + n;
+      for (const [tier, n] of Object.entries(calls)) meta.push(h("span", { class: `tier ${tier}` }, `${tier} · ${plural(n, "call")}`));
+      if (st.runs.length > 1) meta.push(h("span", {}, plural(st.runs.length, "attempt")));
+      if (!Object.keys(calls).length && def.id === "VERIFY") meta.push(h("span", { class: "tier none" }, "no model, code only"));
+    } else if (def.tier) {
+      meta.push(h("span", { class: `tier ${def.tier.split(" ")[0]}` }, def.tier));
     }
-    ol.append(h("li", { class: `stage ${status}` },
-      h("span", { class: "dot" }, dot),
-      h("div", { class: "name" }, def.label),
-      h("div", { class: "desc" }, def.desc),
-      chips.length ? h("div", { class: "meta" }, chips) : null,
-      st && st.error ? h("div", { class: "err" }, st.error) : null));
+    const lastErr = st && st.runs.length ? st.runs[st.runs.length - 1].error : null;
+    ol.append(h("li", { class: `stage ${status}${S.selected === def.id ? " selected" : ""}` },
+      h("button", {
+        class: "stage-btn", type: "button", disabled: !st,
+        "aria-current": S.selected === def.id ? "step" : null,
+        onclick: () => { S.selected = def.id; S.pinned = !S.outcome && def.id !== S.current; renderNow(); },
+      },
+        h("span", { class: "mark-dot" }, mark),
+        h("span", {},
+          h("span", { class: "stage-name" }, def.label),
+          h("span", { class: "stage-desc" }, def.desc),
+          meta.length ? h("span", { class: "stage-meta" }, meta) : null,
+          lastErr ? h("span", { class: "stage-err" }, lastErr) : null))));
   });
 }
 
-function renderOutcome() {
-  const box = $("outcome");
-  if (!S.outcome) { box.className = "outcome hidden"; return; }
-  box.className = `outcome o-${S.outcome}`;
-  box.replaceChildren(
-    h("div", { class: "label" }, "Outcome"),
-    h("div", { class: "value" }, S.outcome.replace(/_/g, " ")),
-    h("div", { class: "why" }, S.reason || OUTCOME_TEXT[S.outcome] || ""));
-}
 
-function renderTabs() {
-  const nav = $("tabs");
-  nav.replaceChildren();
-  for (const key of S.tabs.keys()) {
-    const v = S.tabs.get(key);
-    const label = TAB_LABELS[key] || TAB_LABELS[v && v.name] || key.replace(/_/g, " ");
-    nav.append(h("button", {
-      class: "tab" + (key === S.active ? " active" : ""), role: "tab",
-      onclick: () => { S.active = key; S.unseen.delete(key); S.follow = false; renderNow(); },
-    }, label, S.unseen.has(key) ? h("span", { class: "new", title: "updated" }) : null));
-  }
-  if (S.tabs.size) {
-    nav.append(h("button", {
-      class: "tab", title: "Jump to the newest artifact as it arrives",
-      onclick: () => { S.follow = !S.follow; renderNow(); },
-    }, S.follow ? "● following" : "○ follow"));
-  }
+/* ---- run trace: the run drawn over time ----------------------------------------------------------
+   Row 1: stages as bands (click to open). Row 2: each model call as a bar in its tier colour, as long
+   as the call took. Row 3: sandbox commands as ticks, red when they failed. Marks: the moment the bug
+   was reproduced, each patch the gate rejected, and the verified fix. */
+const SVGNS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs = {}, text) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
+  if (text != null) el.textContent = text;
+  return el;
 }
+const SHORT = { FETCH: "Fetch", TRIAGE: "Triage", SETUP: "Setup", REPRO: "Reproduce", VERDICT: "Verdict", FIX: "Fix", VERIFY: "Verify", REPORT: "Report" };
 
+function renderTrace() {
+  const box = $("trace");
+  if (!box) return;
+  if (!S || S.firstTs == null) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const plot = box.querySelector(".trace-plot");
+  const W = Math.max(280, Math.floor(plot.getBoundingClientRect().width)), H = 62;
+  const t0 = S.firstTs;
+  const t1 = Math.max(t0 + 1, S.outcome ? S.lastTs : Math.max(S.lastTs, Date.now() / 1000));
+  const x = (t) => ((Math.min(Math.max(t, t0), t1) - t0) / (t1 - t0)) * W;
+  const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img",
+    "aria-label": `Run trace: ${S.trace.stages.length} stage runs, ${S.trace.calls.length} model calls, ${S.trace.cmds.length} sandbox commands` });
+
+  // stage bands
+  S.trace.stages.forEach((b) => {
+    const x0 = x(b.start), x1 = x(b.end ?? t1), w = Math.max(2, x1 - x0 - 2);
+    const g = svg("g", { class: `band ${b.status}${S.selected === b.id ? " sel" : ""}`, tabindex: "0", role: "button",
+      "aria-label": `${STAGE[b.id] ? STAGE[b.id].label : b.id} stage` });
+    g.append(svg("title", {}, `${STAGE[b.id] ? STAGE[b.id].label : b.id} · ${fmtSecs(Math.round((b.end ?? t1) - b.start))}`));
+    g.append(svg("rect", { x: x0, y: 4, width: w, height: 24, rx: 4 }));
+    const label = SHORT[b.id] || b.id;
+    if (w > label.length * 7 + 12) g.append(svg("text", { x: x0 + 8, y: 20 }, label));
+    const open = () => { S.selected = b.id; S.pinned = !S.outcome && b.id !== S.current; renderNow(); };
+    g.addEventListener("click", open);
+    g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    root.append(g);
+  });
+  // model calls
+  S.trace.calls.forEach((c) => {
+    const x0 = x(c.start), w = Math.max(3, x(c.end) - x0);
+    root.append(svg("rect", { class: `call ${c.tier}`, x: x0, y: 33, width: w, height: 9, rx: 2 },
+    ));
+  });
+  // sandbox commands
+  S.trace.cmds.forEach((c) => root.append(svg("rect", { class: `tick${c.failed ? " failed" : ""}`, x: x(c.ts) - 0.75, y: 47, width: 1.5, height: 10 })));
+  // marks
+  S.trace.marks.forEach((m) => {
+    const cx = x(m.ts);
+    const g = svg("g", { class: `mark ${m.kind}` });
+    g.append(svg("title", {}, m.kind === "reject" ? "Patch rejected by the gate" : m.kind === "pass" ? "Fix verified" : "Bug reproduced"));
+    g.append(svg("line", { x1: cx, x2: cx, y1: 2, y2: 58 }));
+    g.append(svg("circle", { cx, cy: 4, r: 4 }));
+    root.append(g);
+  });
+  // live edge
+  if (!S.outcome) root.append(svg("rect", { class: "now", x: W - 2, y: 2, width: 2, height: 56 }));
+  box.querySelector(".trace-plot").replaceChildren(root);
+  box.querySelector(".trace-start").textContent = "0s";
+  box.querySelector(".trace-end").textContent = fmtSecs(Math.round(t1 - t0));
+}
+window.addEventListener("resize", () => { if (S) renderTrace(); });
+
+/* ---- pane ------------------------------------------------------------------------------------------ */
 function renderPane() {
   const pane = $("pane");
-  if (!S.active || !S.tabs.has(S.active)) {
-    pane.replaceChildren(h("div", { class: "empty" }, h("p", { class: "muted" },
-      S.outcome ? "This run produced no artifacts." : "Waiting for the first result…")));
+  const id = S.selected;
+  if (!id || !S.stages[id]) {
+    pane.replaceChildren(h("div", { class: "waiting" }, icon("spin"), "Starting the run…"));
     return;
   }
-  const stick = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 40;
-  const v = S.tabs.get(S.active);
-  pane.replaceChildren(S.active === "terminal" ? viewTerminal() : viewArtifact(v.name, v.content));
-  if (S.active === "terminal" && stick) pane.scrollTop = pane.scrollHeight;
+  const def = STAGE[id] || { label: id, desc: "" };
+  const st = S.stages[id];
+  const live = !S.outcome && S.current !== id && S.pinned;
+  const head = h("div", { class: "pane-head" },
+    h("div", {}, h("h1", {}, def.label), h("p", {}, def.desc)),
+    h("div", { class: "status" },
+      statusBadge(st.status),
+      live ? h("button", { class: "btn small", type: "button",
+        onclick: () => { S.pinned = false; S.selected = S.current; renderNow(); } }, icon("live"), "Follow live") : null));
+
+  const body = h("div");
+  if (id === "REPORT") body.append(viewReport(st));
+  st.runs.forEach((run, i) => {
+    if (id === "REPORT") return;
+    const many = st.runs.length > 1;
+    const wrap = h("section", { class: "attempt" });
+    if (many) wrap.append(h("h2", { class: "attempt-head" }, `Attempt ${i + 1}`, attemptBadge(id, run, i),
+      h("span", { class: "sub" }, attemptNote(run))));
+    wrap.append(...viewRun(id, run));
+    if (run.error) wrap.append(h("div", { class: "block" }, h("h3", {}, "Stage error"), h("pre", { class: "out stderr" }, run.error)));
+    if (!run.items.length && run.status === "running") wrap.append(h("div", { class: "waiting" }, icon("spin"), "Working…"));
+    body.append(wrap);
+  });
+
+  const doc = document.scrollingElement;
+  const stick = doc.scrollTop + window.innerHeight >= doc.scrollHeight - 80;
+  const sameStage = pane.dataset.stage === id;
+  pane.replaceChildren(head, body);
+  pane.dataset.stage = id;
+  const top = pane.getBoundingClientRect().top + doc.scrollTop - 84;
+  if (!sameStage && doc.scrollTop > top) window.scrollTo({ top, behavior: "smooth" });
+  else if (sameStage && stick && st.status === "running" && doc.scrollTop > 0) window.scrollTo({ top: doc.scrollHeight });
 }
 
-/* ---- artifact views --------------------------------------------------------------------- */
-function card(title, ...kids) { return h("div", { class: "card" }, title ? h("h3", {}, title) : null, ...kids); }
+function statusBadge(status) {
+  if (status === "done") return h("span", { class: "badge good" }, icon("check"), "Done");
+  if (status === "failed") return h("span", { class: "badge bad" }, icon("x"), "Failed");
+  if (status === "running") return h("span", { class: "badge info" }, "Running");
+  return h("span", { class: "badge neutral" }, status);
+}
+function attemptBadge(id, run, index) {
+  if (id === "FIX" && S.stages.VERIFY && S.stages.VERIFY.runs[index]) return attemptBadge("VERIFY", S.stages.VERIFY.runs[index], index);
+  const names = run.items.filter((x) => x.kind === "artifact").map((x) => x.name);
+  if (names.includes("verify_failed")) return h("span", { class: "badge bad" }, "Rejected");
+  if (names.includes("verified_fix") || names.includes("verify_passed")) return h("span", { class: "badge good" }, "Verified");
+  if (run.status === "running") return h("span", { class: "badge info" }, "Running");
+  if (run.status === "failed") return h("span", { class: "badge bad" }, "Failed");
+  return null;
+}
+function attemptNote(run) {
+  const n = Object.values(run.calls).reduce((a, b) => a + b, 0);
+  const cmds = run.items.filter((x) => x.kind === "cmd").length;
+  return [n ? plural(n, "model call") : null, cmds ? plural(cmds, "command") : null].filter(Boolean).join(" · ");
+}
+
+/* A run's items in order: consecutive sandbox commands are grouped into one block. */
+const QUIET_COMMANDS = new Set(["FETCH", "TRIAGE", "VERDICT", "FIX", "REPORT"]);   // commands are plumbing here
+
+function viewRun(stageId, run) {
+  const out = [];
+  let cmds = null;
+  const names = new Set(run.items.filter((x) => x.kind === "artifact").map((x) => x.name));
+  if (QUIET_COMMANDS.has(stageId)) {
+    const quiet = run.items.filter((x) => x.kind === "cmd");
+    for (const item of run.items) if (item.kind === "artifact") out.push(viewArtifact(item.name, item.content));
+    if (quiet.length) out.push(h("details", { class: "block" },
+      h("summary", { class: "muted" }, `${plural(quiet.length, "sandbox command")} used to read the code`),
+      h("div", { class: "cmds", style: "margin-top:12px" }, quiet.map(viewCommand))));
+    return out;
+  }
+  for (const item of run.items) {
+    if (item.kind === "cmd") {
+      if (!cmds) { cmds = h("div", { class: "cmds" }); out.push(h("div", { class: "block" }, h("h3", {}, "Sandbox commands"), cmds)); }
+      cmds.append(viewCommand(item));
+      continue;
+    }
+    cmds = null;
+    if (item.name === "verify_passed" && names.has("verified_fix")) continue;   // shown inside verified_fix
+    out.push(viewArtifact(item.name, item.content));
+  }
+  return out;
+}
+
+function viewCommand(c) {
+  const failed = c.timed_out || c.exit_code !== 0;
+  const exit = c.timed_out ? h("span", { class: "exit timeout" }, "timed out")
+    : h("span", { class: "exit " + (c.exit_code === 0 ? "ok" : "fail") }, `exit ${c.exit_code}`);
+  const hasOut = Boolean(c.stdout || c.stderr);
+  const det = h("details", { class: "cmd", open: failed && hasOut ? true : null },
+    h("summary", {}, hasOut ? icon("chev", "i chev") : h("span", { style: "width:14px" }),
+      h("span", { class: "prompt" }, "$"), h("span", { class: "text" }, c.cmd), exit));
+  if (hasOut) {
+    const pre = h("pre", { class: "out" });
+    if (c.stdout) pre.append(c.stdout.endsWith("\n") ? c.stdout : c.stdout + "\n");
+    if (c.stderr) pre.append(h("span", { class: "stderr" }, c.stderr));
+    det.append(pre);
+  }
+  return det;
+}
+
+/* ---- artifact views ------------------------------------------------------------------------------ */
+function block(title, ...kids) { return h("div", { class: "block" }, title ? h("h3", {}, title) : null, ...kids); }
 function kv(obj) {
-  return h("dl", { class: "kv" }, Object.entries(obj).filter(([, v]) => v != null && v !== "")
+  return h("dl", { class: "kv" }, Object.entries(obj).filter(([, v]) => v != null && v !== "" && !(Array.isArray(v) && !v.length))
     .flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, Array.isArray(v) ? v.join(", ") : asText(v))]));
 }
 function code(text, cls = "code") { return h("pre", { class: cls }, text ?? ""); }
 function diffView(text) {
   const pre = h("pre", { class: "diff" });
   for (const line of String(text || "").split("\n")) {
-    const cls = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") ? "file"
-      : line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : null;
-    pre.append(cls ? h("span", { class: cls }, line) : document.createTextNode(line + "\n"));
+    const cls = line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ") ? "file"
+      : line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "";
+    pre.append(h("span", { class: `l ${cls}` }, line || " "), "\n");
   }
   return pre;
 }
-function badge(text, kind) { return h("span", { class: `badge ${kind}` }, text); }
-
-function viewTerminal() {
-  const wrap = h("div");
-  for (const c of S.commands) {
-    const exit = c.timed_out ? h("span", { class: "exit timeout" }, "timed out")
-      : h("span", { class: "exit " + (c.exit_code === 0 ? "ok" : "fail") }, `exit ${c.exit_code}`);
-    const out = h("pre", { class: "term" });
-    if (c.stdout) out.append(c.stdout.endsWith("\n") ? c.stdout : c.stdout + "\n");
-    if (c.stderr) out.append(h("span", { class: "stderr" }, c.stderr));
-    wrap.append(h("div", { class: "cmd" },
-      h("div", { class: "line" }, h("span", { class: "prompt" }, "$"), h("span", { class: "text" }, c.cmd), exit),
-      c.stdout || c.stderr ? out : null));
-  }
-  return wrap;
-}
+function badge(text, kind, ic) { return h("span", { class: `badge ${kind}` }, ic ? icon(ic) : null, text); }
+function list(items) { return h("ul", { class: "plain" }, asList(items).map((s) => h("li", {}, asText(s)))); }
 
 function viewArtifact(name, c) {
   c = c ?? {};
   switch (name) {
     case "issue":
-      return card(null, h("h2", {}, c.title || "(untitled issue)"),
-        kv({ repo: c.repo, ref: c.ref }),
-        c.url ? h("p", {}, h("a", { href: c.url, target: "_blank", rel: "noopener" }, c.url)) : null);
+      return block(null,
+        h("p", { class: "lead" }, c.title || "(untitled issue)"),
+        kv({ Repository: c.repo, "Requested ref": c.ref }),
+        c.url ? h("p", { style: "margin-top:10px" }, h("a", { href: c.url, target: "_blank", rel: "noopener" }, "Open the issue on GitHub ", icon("ext"))) : null);
 
     case "triage": {
-      const kind = c.kind || "?";
+      const kind = c.kind || "unknown";
       return h("div", {},
-        card("Classification", badge(kind, kind === "bug" ? "good" : "info"),
-          c.claimed_version ? h("span", { class: "muted" }, `  claimed version ${c.claimed_version}`) : null),
-        c.steps?.length ? card("Steps", h("ol", {}, c.steps.map((s) => h("li", {}, s)))) : null,
-        card("Expected vs actual", kv({ expected: c.expected, actual: c.actual })),
-        c.missing_info?.length ? card("Missing information", h("ul", {}, c.missing_info.map((s) => h("li", {}, s)))) : null);
+        block("Classification",
+          h("p", {}, badge(kind === "bug" ? "Bug" : kind[0].toUpperCase() + kind.slice(1), kind === "bug" ? "good" : "info"),
+            c.claimed_version ? h("span", { class: "muted" }, `  reported against version ${c.claimed_version}`) : null)),
+        h("div", { class: "two" },
+          block("Expected", h("p", {}, c.expected || "Not stated")),
+          block("Actual", h("p", {}, c.actual || "Not stated"))),
+        asList(c.steps).length ? block("Steps to reproduce", h("ol", { class: "plain" }, asList(c.steps).map((s) => h("li", {}, asText(s))))) : null,
+        asList(c.missing_info).length ? block("Missing from the report", list(c.missing_info)) : null);
     }
+
+    case "ref_choice":
+      return block("Version", h("p", {}, "Checked out ", h("b", {}, c.ref || "default branch"), c.note ? h("span", { class: "muted" }, `: ${c.note}`) : null));
+
+    case "environment": case "environment_degraded": case "environment_failed":
+      return block(name === "environment_failed" ? "Environment could not be built" : "Environment",
+        kv({ Python: c.python, Ref: c.ref, "Tests collect": c.tests_collect_ok == null ? null : (c.tests_collect_ok ? "yes" : "no"),
+             "Install attempts": c.attempts, Warnings: asList(c.warnings) }),
+        asList(c.install_commands).length ? [h("h4", {}, "Install commands"), code(asList(c.install_commands).join("\n"))] : null);
+
+    case "setup_plan":
+      return block("Install plan proposed by super", code(asText(c)));
 
     case "repro_script":
       return h("div", {},
-        card("Reproduction script", kv({ path: c.path, "python flags": c.python_flags, attempt: c.attempt })),
-        code(c.script ?? asText(c)));
+        block("Reproduction script",
+          h("p", { class: "muted" }, "Written to fail while the bug exists and pass once it is fixed."),
+          kv({ File: c.path, "Python flags": asList(c.python_flags), "Extra packages": asList(c.extra_packages), "Expected symptom": c.expected_symptom }),
+          h("div", { style: "margin-top:12px" }, code(c.script ?? asText(c))),
+          c.reasoning ? h("details", { style: "margin-top:10px" }, h("summary", { class: "muted" }, "Why this script"), h("p", { style: "margin-top:8px" }, c.reasoning)) : null));
 
     case "repro_result": {
-      const kind = c.classification || "?";
-      const tone = kind === "failed" || kind === "hang" ? "good" : kind === "passed" ? "warn" : "bad";
-      return h("div", {},
-        card("Result", badge(kind, tone), h("span", { class: "muted" }, `  exit code ${c.exit_code}`),
-          h("p", { class: "muted" }, "The script is written to FAIL while the bug exists.")),
-        code(c.output, "term"));
+      const kind = c.classification || "unknown";
+      const reproduced = kind === "failed" || kind === "hang";
+      return block("Result",
+        h("p", {}, badge(reproduced ? (kind === "hang" ? "Hangs, as reported" : "Fails, as expected") : kind === "passed" ? "Passed: bug not shown" : kind,
+          reproduced ? "good" : "warn", reproduced ? "check" : null), h("span", { class: "muted" }, `  exit code ${c.exit_code}`)),
+        code(c.output, "out"));
     }
 
+    case "repro_gave_up":
+      return block("Gave up reproducing", h("p", {}, `After ${plural(c.attempts || 0, "attempt")} no script showed the reported failure.`), c.last_result ? code(asText(c.last_result), "out") : null);
+
+    case "repo_modified_by_script":
+      return block("The script changed files in the repository", code(asText(c.changes), "out"));
+
     case "verdict": {
-      const conf = Math.round((c.confidence || 0) * 100);
+      const conf = Math.round((Number(c.confidence) || 0) * 100);
       return h("div", {},
-        card("Does the failure match the issue?",
-          badge(c.matches_issue ? "MATCHES" : "DOES NOT MATCH", c.matches_issue ? "good" : "bad"),
-          h("div", { class: "muted", style: "margin-top:10px" }, `confidence ${conf}%`),
-          h("div", { class: "confbar" }, h("i", { style: `width:${conf}%` }))),
-        card("Symptoms", kv({ reported: c.reported_symptom, observed: c.observed_symptom })),
-        card("Reasoning (ultra)", h("p", {}, c.reasoning || "")));
+        block("Does the failure match the issue?",
+          h("p", {}, c.matches_issue ? badge("Matches the report", "good", "check") : badge("Does not match", "bad", "x")),
+          h("div", { class: "conf" }, h("span", {}, `Confidence ${conf}%`), h("span", { class: "conf-bar" }, h("i", { style: `width:${conf}%` }))),
+          h("ul", { class: "checks", style: "margin-top:14px" },
+            h("li", { class: c.failure_matches_symptom ? "" : "no" }, icon(c.failure_matches_symptom ? "check" : "x"), "The observed failure is the reported one"),
+            h("li", { class: c.would_pass_if_fixed ? "" : "no" }, icon(c.would_pass_if_fixed ? "check" : "x"), "The script would pass if the library were fixed"))),
+        h("div", { class: "two" },
+          block("Reported", h("p", {}, c.reported_symptom || "Not stated")),
+          block("Observed", h("p", {}, c.observed_symptom || "Not stated"))),
+        block("Reasoning from ultra", h("p", {}, c.reasoning || "")),
+        c.cannot_reproduce_in_sandbox ? block("Cannot be reproduced in this sandbox", h("p", {}, "The judge found the bug depends on something the Linux sandbox does not have.")) : null);
     }
 
     case "fix_locate":
-      return card("Files chosen for the patch", code(asText(c)));
+      return block("Where to look",
+        kv({ Files: asList(c.files), "Search terms": asList(c.search_terms) }),
+        c.reasoning ? h("p", { class: "muted", style: "margin-top:10px" }, c.reasoning) : null);
 
     case "fix_plan":
       return h("div", {},
-        card(`Patch — attempt ${c.attempt ?? 1} (${c.tier ?? "super"})`, h("p", {}, c.root_cause || "")),
-        c.plan_errors?.length ? card("Plan problems", h("ul", {}, c.plan_errors.map((e) => h("li", {}, e)))) : null,
-        diffView(c.patch),
-        c.test_path ? h("p", { class: "muted" }, `Regression test: ${c.test_path}`) : null);
-
-    case "verify_passed":
-      return h("div", {},
-        h("div", { class: "proof" },
-          h("div", { class: "side" }, h("div", { class: "muted" }, "Test on ORIGINAL code"),
-            h("div", { class: "big", style: "color:var(--red)" }, "FAILS"), h("div", { class: "muted" }, `exit ${c.before}`)),
-          h("div", { class: "arrow" }, "→"),
-          h("div", { class: "side" }, h("div", { class: "muted" }, "Test on PATCHED code"),
-            h("div", { class: "big", style: "color:var(--accent)" }, "PASSES"), h("div", { class: "muted" }, `exit ${c.after}`))),
-        c.suite ? card("Existing test suite", code(asText(c.suite))) : null);
+        block(`Proposed patch, written by ${c.tier || "super"}`,
+          c.root_cause ? h("p", {}, h("b", {}, "Root cause. "), c.root_cause) : null,
+          c.test_path ? h("p", { class: "muted" }, `Regression test: ${c.test_path}`) : null,
+          asList(c.plan_errors).length ? [h("h4", {}, "Problems found before running it"), list(c.plan_errors)] : null,
+          c.patch ? h("div", { style: "margin-top:12px" }, diffView(c.patch)) : null));
 
     case "verify_failed":
-      return card("Verification failed", badge("REJECTED", "bad"), h("p", {}, c.reason || ""));
+      return block("Why the gate rejected it", code(c.reason || "", "out"));
 
-    case "report":
-      return h("div", {},
-        card(c.generated_by_model === false ? "Comment (plain template)" : "Comment drafted by nano",
-          h("h2", {}, c.title || "")),
-        h("div", { class: "card md" }, renderMarkdown(c.comment || "")));
+    case "verified_fix":
+      return viewProof(c);
+
+    case "verify_passed":
+      return block("Gate passed", h("p", {}, badge("All checks passed", "good", "check")),
+        kv({ "Test exit before": c.before, "Test exit after": c.after }));
 
     default:
-      return card(TAB_LABELS[name] || name, code(asText(c)));
+      return block(name.replace(/_/g, " "), code(asText(c)));
   }
 }
 
-/* Minimal, safe markdown for the GitHub comment: headings, fenced code, inline code, paragraphs. */
-function renderMarkdown(src) {
-  const out = h("div");
-  const lines = String(src).split("\n");
-  let i = 0, para = [];
-  const flush = () => { if (para.length) { out.append(inline(h("p"), para.join(" "))); para = []; } };
-  while (i < lines.length) {
-    const line = lines[i];
-    const fence = line.match(/^```(\w*)/);
-    if (fence) {
-      flush();
-      const body = [];
-      for (i++; i < lines.length && !lines[i].startsWith("```"); i++) body.push(lines[i]);
-      i++;
-      out.append(fence[1] === "diff" ? diffView(body.join("\n")) : code(body.join("\n")));
-      continue;
-    }
-    const head = line.match(/^(#{1,6})\s+(.*)/);
-    if (head) { flush(); out.append(inline(h("h3"), head[2])); }
-    else if (!line.trim()) flush();
-    else para.push(line);
-    i++;
+/* The fail-before / pass-after proof, from the verified_fix artifact. */
+function viewProof(c) {
+  const before = c.before || {}, after = c.after || {}, reproAfter = c.repro_after || {}, suite = c.suite || {};
+  const newFailures = asList(suite.new_failures);
+  return h("div", {},
+    h("div", { class: "proof" },
+      h("div", { class: "side before" }, h("div", { class: "label" }, "New test on the original code"),
+        h("div", { class: "big" }, before.timed_out ? "Hangs" : "Fails"), h("div", { class: "faint num" }, `exit ${before.exit_code ?? "?"}`)),
+      h("div", { class: "arrow" }, icon("arrow")),
+      h("div", { class: "side after" }, h("div", { class: "label" }, "Same test with the patch"),
+        h("div", { class: "big" }, "Passes"), h("div", { class: "faint num" }, `exit ${after.exit_code ?? "?"}`))),
+    block("The four checks",
+      h("ul", { class: "checks" },
+        h("li", {}, icon("check"), "The new regression test fails on the original code"),
+        h("li", {}, icon("check"), "It passes with the patch applied"),
+        h("li", { class: reproAfter.exit_code === 0 ? "" : "no" }, icon(reproAfter.exit_code === 0 ? "check" : "x"), "The original reproduction script now passes"),
+        h("li", { class: newFailures.length ? "no" : "" }, icon(newFailures.length ? "x" : "check"),
+          suite.ran === false ? "The existing test suite could not be run in time" : newFailures.length ? `Breaks existing tests: ${newFailures.join(", ")}` : "No previously passing test breaks"))),
+    c.root_cause ? block("Root cause", h("p", {}, c.root_cause)) : null,
+    c.patch ? block("Patch", diffView(c.patch)) : null,
+    c.test_code ? block(`Regression test${c.test_path ? ` (${c.test_path})` : ""}`, code(c.test_code)) : null);
+}
+
+/* REPORT: the model's title and summary, with the evidence sections built from the run's own artifacts
+   (script, output, patch, test), so formatting never depends on the model keeping its line breaks. */
+function findArtifact(name) {
+  for (const id of S.order) for (const run of S.stages[id].runs)
+    for (let i = run.items.length - 1; i >= 0; i--) if (run.items[i].kind === "artifact" && run.items[i].name === name) return run.items[i].content;
+  return null;
+}
+function lastArtifact(name) {
+  let found = null;
+  for (const id of S.order) for (const run of S.stages[id].runs)
+    for (const it of run.items) if (it.kind === "artifact" && it.name === name) found = it.content;
+  return found;
+}
+function summaryOf(comment) {
+  const text = String(comment || "").trim();
+  const formatted = text.split("\n").length >= 3;
+  if (formatted) return text.split(/\n#{1,6}\s/)[0].trim();
+  return text.split(/#{2,}|```/)[0].trim();             // unformatted reply: keep the opening prose only
+}
+function viewReport(st) {
+  const rep = lastArtifact("report");
+  if (!rep) {
+    const run = st.runs[st.runs.length - 1];
+    return run && run.status === "running" ? h("div", { class: "waiting" }, icon("spin"), "Nano is drafting the comment…") : block(null, h("p", { class: "muted" }, "No comment was produced."));
   }
-  flush();
-  return out;
+  const script = lastArtifact("repro_script"), result = lastArtifact("repro_result"), fix = lastArtifact("verified_fix");
+  return h("div", {},
+    block(null,
+      h("p", { class: "faint", style: "margin-bottom:6px" }, rep.generated_by_model === false ? "Comment from the plain template" : "Comment drafted by nano"),
+      h("p", { class: "lead", style: "font-weight:600" }, rep.title || ""),
+      h("p", { class: "md" }, inline(h("span"), summaryOf(rep.comment)))),
+    fix ? viewProof(fix) : null,
+    script ? block("Reproduction", code(script.script || ""), result ? h("div", { style: "margin-top:10px" }, code(result.output || "", "out")) : null) : null,
+    h("details", { class: "block" }, h("summary", { class: "muted" }, "Full comment text as written by the model"),
+      h("pre", { class: "out", style: "margin-top:10px" }, rep.comment || "")));
 }
 function inline(el, text) {
-  text.split(/(`[^`]+`)/).forEach((part) => {
+  String(text).split(/(`[^`\n]+`)/).forEach((part) => {
     if (part.startsWith("`") && part.endsWith("`") && part.length > 1) el.append(h("code", {}, part.slice(1, -1)));
     else if (part) el.append(part);
   });
   return el;
+}
+
+/* ---- empty state: teach the interface -------------------------------------------------------------- */
+function renderEmpty() {
+  renderRunCard();
+  $("outcome").className = "outcome hidden";
+  $("stages").replaceChildren(...STAGES.map((def, i) => h("li", { class: "stage pending" },
+    h("button", { class: "stage-btn", type: "button", disabled: true },
+      h("span", { class: "mark-dot" }, String(i + 1)),
+      h("span", {}, h("span", { class: "stage-name" }, def.label), h("span", { class: "stage-desc" }, def.desc),
+        def.tier ? h("span", { class: "stage-meta" }, h("span", { class: `tier ${def.tier.split(" ")[0]}` }, def.tier))
+          : def.id === "VERIFY" ? h("span", { class: "stage-meta" }, h("span", { class: "tier none" }, "no model, code only")) : null)))));
+  const fill = (url) => { $("issue-url").value = url; $("issue-url").focus(); };
+  $("pane").replaceChildren(h("div", { class: "empty" },
+    h("h1", {}, "Reproduce a GitHub issue, then prove the fix"),
+    h("p", {}, "Paste an issue from a Python library. The agent reproduces it in a Nebius sandbox, a separate Nemotron model judges whether the failure is the reported one, and a patch only counts if its test fails before the fix and passes after."),
+    h("h2", {}, "Try one of these"),
+    h("div", { class: "pick" }, EXAMPLES.map((ex) => h("button", { type: "button", onclick: () => fill(ex.url) },
+      h("span", { class: "t" }, ex.t), h("span", { class: "d" }, ex.d), h("span", { class: "go" }, icon("arrow"))))),
+    h("div", { id: "recent" }),
+    h("h2", {}, "What happens"),
+    h("ol", { class: "steps" },
+      h("li", {}, h("b", {}, "Reproduce"), "Super writes a script that fails while the bug exists."),
+      h("li", {}, h("b", {}, "Judge"), "Ultra checks it is the reported failure, not another one."),
+      h("li", {}, h("b", {}, "Fix"), "Super proposes a patch and a regression test."),
+      h("li", {}, h("b", {}, "Verify"), "Plain code runs the test before and after. No model grades itself."))));
+  showRecent();
+}
+async function showRecent() {
+  try {
+    const runs = (await api("/runs?limit=10")).filter((r) => r.state === "done").slice(0, 3);
+    const box = $("recent");
+    if (!box || !runs.length) return;
+    box.replaceChildren(h("h2", {}, "Or open a finished run"),
+      h("div", { class: "pick" }, runs.map((r) => h("button", { type: "button", onclick: () => openRun(r.id) },
+        h("span", { class: "t" }, r.issue_url.replace("https://github.com/", "").replace("/issues/", " #")),
+        h("span", { class: "d" }, `${(OUTCOME[r.outcome] || {}).title || r.outcome || r.state} · $${(r.cost || 0).toFixed(4)} · press Replay to watch it again`),
+        h("span", { class: "go" }, icon("arrow"))))));
+  } catch { /* optional */ }
 }
 
 /* ---- networking --------------------------------------------------------------------------- */
@@ -425,10 +749,11 @@ async function loadHistory() {
   try {
     const runs = await api("/runs?limit=30");
     const sel = $("history");
-    sel.replaceChildren(h("option", { value: "" }, "Previous runs…"));
+    sel.replaceChildren(h("option", { value: "" }, "Previous runs"));
     for (const r of runs) {
       const name = r.issue_url.replace("https://github.com/", "").replace("/issues/", " #");
-      sel.append(h("option", { value: r.id, selected: S && S.runId === r.id }, `${name} — ${r.outcome || r.state}`));
+      const label = (OUTCOME[r.outcome] || {}).title || (r.state === "done" ? r.outcome : "running");
+      sel.append(h("option", { value: r.id, selected: S && S.runId === r.id }, `${name} · ${label}`));
     }
   } catch { /* history is optional */ }
 }
@@ -441,6 +766,7 @@ $("run-form").addEventListener("submit", async (e) => {
   try {
     if (MODE === "inline") {
       openStream(`/runs/live?issue_url=${encodeURIComponent(url)}`, "starting…");
+      S.issueUrl = url;
     } else {
       const { run_id } = await api("/runs", { method: "POST", body: JSON.stringify({ issue_url: url }) });
       openRun(run_id);
@@ -483,5 +809,6 @@ window.addEventListener("popstate", () => {
   } catch { /* server unreachable: the stream will report it */ }
   const id = new URLSearchParams(location.search).get("run");
   if (id) openRun(id, false);
+  else renderNow();                                 // empty state
   loadHistory();
 })();

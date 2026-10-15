@@ -4,58 +4,103 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Issue-to-Repro</title>
+  <meta name="description" content="Reproduce a GitHub issue in a sandbox, then patch it and prove the fix. NVIDIA Nemotron on Nebius Token Factory.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2376b900'/%3E%3Cpath d='M9 11l5 5-5 5M16 21h7' stroke='%230b1000' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <span class="logo">⟲</span>
-      <div>
-        <h1>Issue-to-Repro</h1>
-        <p class="tag">Nemotron on Nebius Token Factory · reproduce, patch, verify</p>
-      </div>
-    </div>
+  <header class="bar">
+    <a class="brand" href="/" aria-label="Issue-to-Repro home">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7"/><path d="M9 11l5 5-5 5M16 21h7"/></svg>
+      <span class="brand-text">
+        <span class="brand-name">Issue-to-Repro</span>
+        <span class="brand-sub">Nemotron on Nebius Token Factory</span>
+      </span>
+    </a>
 
     <form id="run-form" class="run-form" autocomplete="off">
-      <input id="issue-url" type="url" required
-             placeholder="https://github.com/owner/repo/issues/123" aria-label="GitHub issue URL">
-      <button type="submit" id="run-btn">Run</button>
+      <label class="sr-only" for="issue-url">GitHub issue URL</label>
+      <span class="field">
+      <svg class="i field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg>
+      <input id="issue-url" type="url" required spellcheck="false"
+             placeholder="Paste a GitHub issue URL, e.g. https://github.com/pallets/click/issues/2877">
+      </span>
+      <button type="submit" id="run-btn" class="btn primary">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5l11 7-11 7z"/></svg>
+        <span>Run</span>
+      </button>
     </form>
 
     <div class="history">
-      <select id="history" aria-label="Previous runs"><option value="">Previous runs…</option></select>
-      <button id="replay-btn" class="ghost" disabled title="Re-stream this run without calling any model">Replay</button>
+      <label class="sr-only" for="history">Open a previous run</label>
+      <select id="history"><option value="">Previous runs</option></select>
+      <button id="replay-btn" class="btn" disabled title="Play this run again at 4× speed. No model is called.">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        <span>Replay</span>
+      </button>
     </div>
   </header>
 
-  <section class="meters" id="meters" aria-label="Model usage">
-    <div class="meter tier" data-tier="nano"><span class="k">nano</span><span class="v" id="m-nano">0</span><span class="u">tok</span></div>
-    <div class="meter tier" data-tier="super"><span class="k">super</span><span class="v" id="m-super">0</span><span class="u">tok</span></div>
-    <div class="meter tier" data-tier="ultra"><span class="k">ultra</span><span class="v" id="m-ultra">0</span><span class="u">tok</span></div>
-    <div class="meter"><span class="k">model calls</span><span class="v" id="m-calls">0</span></div>
-    <div class="meter"><span class="k">commands</span><span class="v" id="m-cmds">0</span></div>
-    <div class="meter"><span class="k">cost</span><span class="v" id="m-cost">$0.0000</span></div>
-    <div class="meter"><span class="k">elapsed</span><span class="v" id="m-time">0s</span></div>
-    <div class="meter run-id"><span class="k">run</span><span class="v" id="m-run">—</span></div>
+  <section id="runcard" class="runcard hidden" aria-label="Current run">
+    <div class="run-top">
+      <div class="run-id-block">
+        <div class="run-line">
+          <a id="run-repo" class="run-repo" href="#" target="_blank" rel="noopener"></a>
+          <span id="run-state" class="pill"></span>
+        </div>
+        <h1 id="run-title" class="run-title"></h1>
+      </div>
+      <dl class="stats">
+        <div><dt>Cost</dt><dd id="m-cost">$0.0000</dd></div>
+        <div><dt>Model calls</dt><dd id="m-calls">0</dd></div>
+        <div><dt>Commands</dt><dd id="m-cmds">0</dd></div>
+        <div><dt>Elapsed</dt><dd id="m-time">0s</dd></div>
+      </dl>
+    </div>
+
+    <div class="run-viz">
+      <div class="split" aria-label="Model usage">
+        <div class="split-head">
+          <span class="split-title">Model routing</span>
+          <span class="split-total" id="m-tokens">0 tokens</span>
+        </div>
+        <div class="split-bar" id="split-bar" role="img" aria-label="Tokens by model tier">
+          <span class="seg nano" style="width:0"></span><span class="seg super" style="width:0"></span><span class="seg ultra" style="width:0"></span>
+        </div>
+        <ul class="legend">
+          <li class="t-nano"><span class="sw"></span>Nano <b id="m-nano">0</b></li>
+          <li class="t-super"><span class="sw"></span>Super <b id="m-super">0</b></li>
+          <li class="t-ultra"><span class="sw"></span>Ultra <b id="m-ultra">0</b></li>
+        </ul>
+      </div>
+
+      <div id="trace" class="trace hidden" aria-label="Run trace">
+        <div class="trace-head">
+          <span class="trace-title">Run trace</span>
+          <ul class="trace-key">
+            <li><span class="k-call"><i class="n"></i><i class="s"></i><i class="u"></i></span>Model calls</li>
+            <li><span class="k-tick"></span>Commands</li>
+            <li><span class="k-dot repro"></span>Reproduced</li>
+            <li><span class="k-dot reject"></span>Rejected</li>
+            <li><span class="k-dot pass"></span>Verified</li>
+          </ul>
+          <span class="trace-axis"><span class="trace-start"></span><span class="trace-end"></span></span>
+        </div>
+        <div class="trace-plot"></div>
+      </div>
+    </div>
+    <p class="run-foot">Run <span id="m-run" class="mono">none</span></p>
   </section>
 
   <main class="layout">
-    <aside class="timeline" aria-label="Stages">
-      <div id="outcome" class="outcome hidden"></div>
+    <nav class="rail" aria-label="Run stages">
+      <div id="outcome" class="outcome hidden" aria-live="polite"></div>
       <ol id="stages" class="stages"></ol>
-    </aside>
-
-    <section class="viewer" aria-label="Artifacts">
-      <nav id="tabs" class="tabs" role="tablist"></nav>
-      <div id="pane" class="pane">
-        <div class="empty">
-          <p>Paste a GitHub issue URL and press <b>Run</b>.</p>
-          <p class="muted">The agent fetches the issue, writes a reproduction script, runs it in a sandbox,
-            asks a separate model whether the failure matches the report, and only then proposes a patch
-            that must fail before and pass after.</p>
-        </div>
-      </div>
-    </section>
+    </nav>
+    <section id="pane" class="pane" aria-live="polite"></section>
   </main>
 
   <div id="toast" class="toast hidden" role="status"></div>
