@@ -17,8 +17,8 @@ import re
 
 from itr.agent.budget import attempts_used, spend_attempt
 from itr.agent.context import Context, clip
-from itr.agent.patching import (MAX_TEST_CHARS, PROTECTED, apply_edits, check_edits, repo_diff, reset_repo,
-                                syntax_errors, test_path_error, tracked_files)
+from itr.agent.patching import (MAX_TEST_CHARS, PROTECTED, apply_edits, check_edits, indent_hint, reindent_variants,
+                                relocate_edits, repo_diff, reset_repo, size_error, syntax_errors, test_path_error, tracked_files)
 from itr.agent.paths import REPO_DIR
 from itr.agent.states import State
 
@@ -27,6 +27,7 @@ MAX_FILES = 4
 FILE_CHARS = 12000             # a file longer than this is shown as windows around the relevant lines
 TOTAL_CHARS = 32000
 WINDOW = 25                    # lines of context around a relevant line
+MAX_BLOCK = 80                 # a def/class that matches a search term is shown whole, up to this many lines
 
 LOCATE_SCHEMA = {
     "type": "object",
@@ -72,6 +73,24 @@ def traceback_locations(output: str) -> dict[str, list[int]]:
     return found
 
 
+def block_end(lines: list[str], i: int) -> int | None:
+    """If line i (1-based) starts a def or class, the last line of its body (capped at MAX_BLOCK lines);
+    otherwise None. A fixed window cut long functions in half, and the model then "fixed" code it had not read."""
+    head = lines[i - 1]
+    if not re.match(r"\s*(?:async\s+def|def|class)\s", head):
+        return None
+    indent = len(head) - len(head.lstrip())
+    end = i
+    for j in range(i + 1, min(len(lines), i + MAX_BLOCK) + 1):
+        ln = lines[j - 1]
+        if not ln.strip():
+            continue
+        if len(ln) - len(ln.lstrip()) <= indent and not ln.lstrip().startswith(")"):
+            break
+        end = j
+    return end
+
+
 def render_file(text: str, lines_of_interest: list[int], terms: list[str], limit: int = FILE_CHARS) -> str:
     """A numbered view ("  12| code"). The whole file when it is short; otherwise only windows around the
     traceback lines and the lines that mention a search term, with the gaps marked. The numbers are the
@@ -94,6 +113,9 @@ def render_file(text: str, lines_of_interest: list[int], terms: list[str], limit
         for i, ln in enumerate(lines, 1):
             if term in ln:
                 keep.update(range(max(1, i - 3), min(len(lines), i + WINDOW) + 1))
+                end = block_end(lines, i)
+                if end:
+                    keep.update(range(i, end + 1))
                 if len(keep) * 40 > limit * 3:
                     break
     if not keep:
@@ -223,17 +245,42 @@ def fix(ctx: Context) -> State:
     }
     messages = [{"role": "system", "content": ctx.prompt("fix")},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
-    plan = ctx.model_json(tier, messages, FIX_SCHEMA, stage="fix").data
+    plan = ctx.model_json(tier, messages, FIX_SCHEMA, stage="fix", retries=2).data
 
     errors = plan_errors(plan, tracked)
+    reindented, moved = False, []
     patch = ""
+    if not errors:
+        plan["edits"], moved = relocate_edits(ctx, plan["edits"])
     if not errors:                                # dry run: prove every edit applies, keep the diff, undo
         errors = apply_edits(ctx, plan["edits"])
         if not errors:
-            errors = syntax_errors(ctx, sorted({e["path"] for e in plan["edits"]}))
+            paths = sorted({e["path"] for e in plan["edits"]})
+            errors = syntax_errors(ctx, paths)
+            if errors:
+                reset_repo(ctx)                       # compare with the ORIGINAL lines, not our broken edit
+                hint = indent_hint(ctx, plan["edits"])
+                for variant in reindent_variants(ctx, plan["edits"]):      # repair a wrong indent, never a wrong idea
+                    reset_repo(ctx)
+                    if not apply_edits(ctx, variant) and not syntax_errors(ctx, paths):
+                        plan["edits"], errors, reindented = variant, [], True
+                        break
+                else:
+                    reset_repo(ctx)
+                    errors = [e + hint for e in errors]
         if not errors:
             patch = repo_diff(ctx)
+            too_big = size_error(patch)
+            if too_big:
+                errors, patch = [too_big], ""
+        if not errors:
             for h in history:
+                if h.get("patch") and h.get("patch") == patch and "on the patched code" in h.get("failure", ""):
+                    errors = [f"this exact patch was already tried in attempt {h['attempt']} and the checks ran on it "
+                              f"and failed ({clip(h.get('failure', ''), 300)}). The idea is wrong or incomplete; "
+                              f"read the whole function again and change something different."]
+                    patch = ""
+                    break
                 if h.get("patch") == patch and h.get("test_code") == plan["test_code"]:
                     errors = [f"this patch AND test are identical to the ones in attempt {h['attempt']}, which failed "
                               f"({clip(h.get('failure', ''), 300)}). Do something different."]
@@ -242,11 +289,13 @@ def fix(ctx: Context) -> State:
         reset_repo(ctx)
     entry = {"attempt": attempt, "tier": tier, "root_cause": plan["root_cause"], "edits": plan["edits"],
              "test_path": plan["test_path"], "test_code": plan["test_code"], "notes": plan["notes"],
-             "plan_errors": errors, "failure": "", "patch": patch}
+             "plan_errors": errors, "failure": "", "patch": patch, "auto_reindented": reindented,
+             "auto_relocated": moved}
     history.append(entry)
     ctx.run.fix = {"patch": patch, "regression_test": plan["test_code"], "test_path": plan["test_path"],
                    "edits": plan["edits"], "root_cause": plan["root_cause"], "notes": plan["notes"],
                    "plan_errors": errors, "history": history, "before_result": None, "after_result": None}
     ctx.artifact("fix_plan", {"attempt": attempt, "tier": tier, "root_cause": plan["root_cause"],
-                              "patch": patch, "test_path": plan["test_path"], "plan_errors": errors})
+                              "patch": patch, "test_path": plan["test_path"], "plan_errors": errors,
+                              "auto_reindented": reindented, "auto_relocated": moved})
     return State.VERIFY

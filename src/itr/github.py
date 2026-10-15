@@ -8,6 +8,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Callable
 
+from itr.retry import retry_call
+
 ISSUE_RE = re.compile(r"^https?://github\.com/([\w.-]+)/([\w.-]+)/issues/(\d+)/?(?:[#?].*)?$")
 API = "https://api.github.com"
 
@@ -24,6 +26,10 @@ def parse_issue_url(url: str) -> tuple[str, str, int]:
 
 
 def _http_get(url: str, token: str | None = None):
+    return retry_call(_http_get_once, url, token)      # a dropped connection must not end the run (D62)
+
+
+def _http_get_once(url: str, token: str | None = None):
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "issue-to-repro"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

@@ -1,0 +1,17 @@
+{"ts": "2026-10-16 01:37", "case": "tabulate-180", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "cost": 0.0086, "secs": 105, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 01:42", "case": "tabulate-241", "expected": "CONFIRMED", "got": "ERROR", "ok": false, "cost": 0.0504, "secs": 294, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 01:46", "case": "tabulate-399", "expected": "CONFIRMED", "got": "ERROR", "ok": false, "cost": 0.0382, "secs": 276, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 01:51", "case": "cachetools-405", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "cost": 0.0516, "secs": 258, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 01:54", "case": "click-1925", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "cost": 0.0193, "secs": 175, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 01:57", "case": "click-2877", "expected": "CONFIRMED", "got": "ERROR", "ok": false, "cost": 0.0449, "secs": 207, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 01:58", "case": "click-3186", "expected": "NOT_REPRODUCED", "got": "NOT_REPRODUCED", "ok": true, "cost": 0.0154, "secs": 82, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 01:59", "case": "click-1629", "expected": "NEEDS_MAINTAINER", "got": "NEEDS_MAINTAINER", "ok": true, "cost": 0.0002, "secs": 9, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 02:00", "case": "tabulate-180", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "cost": 0.0111, "secs": 107, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 02:32", "case": "tabulate-180", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "infra": false, "cost": 0.0116, "secs": 114, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 02:37", "case": "tabulate-241", "expected": "CONFIRMED", "got": "NEEDS_MAINTAINER", "ok": false, "infra": false, "cost": 0.1104, "secs": 306, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 02:50", "case": "tabulate-399", "expected": "CONFIRMED", "got": "NEEDS_MAINTAINER", "ok": false, "infra": false, "cost": 0.1339, "secs": 771, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 02:54", "case": "cachetools-405", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "infra": false, "cost": 0.0278, "secs": 241, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 02:58", "case": "click-1925", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "infra": false, "cost": 0.0656, "secs": 264, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 03:02", "case": "click-2877", "expected": "CONFIRMED", "got": "CONFIRMED", "ok": true, "infra": false, "cost": 0.0316, "secs": 202, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 03:03", "case": "click-3186", "expected": "NOT_REPRODUCED", "got": "NOT_REPRODUCED", "ok": true, "infra": false, "cost": 0.0066, "secs": 58, "code": "1a92bcc+local-changes"}
+{"ts": "2026-10-16 03:03", "case": "click-1629", "expected": "NEEDS_MAINTAINER", "got": "NEEDS_MAINTAINER", "ok": true, "infra": false, "cost": 0.0003, "secs": 10, "code": "1a92bcc+local-changes"}

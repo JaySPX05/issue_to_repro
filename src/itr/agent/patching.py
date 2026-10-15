@@ -15,6 +15,7 @@ from itr.agent.paths import PYTHON, REPO_DIR
 MAX_EDITS = 5
 MAX_REPLACE_CHARS = 6000
 MAX_TEST_CHARS = 8000
+MAX_CHANGED_LINES = 40     # added + removed lines in the whole patch; real fixes are small (tabulate-399's is 4)
 
 SAFE_PATH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*$")
 # Never editable by a patch: tests, their configuration, packaging, docs, CI.
@@ -71,6 +72,45 @@ def check_edits(edits: list[dict], tracked: set[str]) -> list[str]:
         if len(e["replace"]) > MAX_REPLACE_CHARS:
             errors.append(f"{e['path']}: replacement longer than {MAX_REPLACE_CHARS} characters")
     return errors
+
+
+RELOCATE_WINDOW = 25      # how far from the stated line we look for the quoted `first_line`
+RELOCATE_MIN_CHARS = 5    # a quote shorter than this ("else:", "}") is too ambiguous to search for
+
+
+def relocate_edits(ctx: Context, edits: list[dict]) -> tuple[list[dict], list[str]]:
+    """Models quote the right line but misnumber it by a few (live, D63: 4 of 8 fix attempts on tabulate-399 and
+    tabulate-241 were refused with "line N is X, not Y"). `first_line` is an anchor: when it is not at
+    `start_line` but appears EXACTLY ONCE within RELOCATE_WINDOW lines, move the edit (start and end by the same
+    amount) to it. Anything ambiguous or absent is left alone and refused as before. VERIFY still judges the result."""
+    cache: dict[str, list[str]] = {}
+    out, notes = [], []
+    for e in edits:
+        try:
+            if e["path"] not in cache:
+                cache[e["path"]] = ctx.sandbox.read_file(f"{REPO_DIR}/{e['path']}").split("\n")
+            lines = cache[e["path"]]
+        except Exception:
+            out.append(e)
+            continue
+        want = e["first_line"].strip()
+        i = e["start_line"] - 1
+        if (0 <= i < len(lines) and lines[i].rstrip("\r").strip() == want) or len(want) < RELOCATE_MIN_CHARS:
+            out.append(e)
+            continue
+        lo, hi = max(0, i - RELOCATE_WINDOW), min(len(lines), i + RELOCATE_WINDOW + 1)
+        hits = [j for j in range(lo, hi) if lines[j].rstrip("\r").strip() == want]
+        if len(hits) != 1:
+            out.append(e)
+            continue
+        delta = hits[0] - i
+        end = e["end_line"] + delta
+        if end > len(lines) or hits[0] + 1 > end:
+            out.append(e)
+            continue
+        out.append({**e, "start_line": hits[0] + 1, "end_line": end})
+        notes.append(f"{e['path']}: moved an edit from line {e['start_line']} to {hits[0] + 1} (found {want!r} there)")
+    return out, notes
 
 
 def apply_edits(ctx: Context, edits: list[dict]) -> list[str]:
@@ -133,7 +173,77 @@ def apply_edits(ctx: Context, edits: list[dict]) -> list[str]:
     return []
 
 
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _shift(line: str, delta: int) -> str | None:
+    """Move one line by `delta` columns; None when it cannot be moved left that far."""
+    if not line.strip():
+        return line
+    if delta >= 0:
+        return " " * delta + line
+    return line[-delta:] if line[:-delta].strip() == "" else None
+
+
+def reindent_variants(ctx: Context, edits: list[dict]) -> list[list[dict]]:
+    """Other readings of `edits` for when the raw version does not parse. Models often get the indentation
+    of the first replaced line wrong (seen live on click-2877: four attempts in a row, D58). Each variant
+    aligns the replacement's first line with the indentation of the line it replaces, either by shifting
+    the whole block (keeps its inner shape) or by fixing only that first line. A variant is used only if
+    the result parses, and VERIFY still has to pass, so this repairs a typo and cannot hide a wrong fix."""
+    cache: dict[str, list[str]] = {}
+    uniform, first_only = [], []
+    changed = False
+    for e in edits:
+        try:
+            if e["path"] not in cache:
+                cache[e["path"]] = ctx.sandbox.read_file(f"{REPO_DIR}/{e['path']}").split("\n")
+            orig = cache[e["path"]][e["start_line"] - 1].rstrip("\r")
+        except Exception:
+            return []
+        rep = e["replace"].split("\n")
+        first = next((i for i, ln in enumerate(rep) if ln.strip()), None)
+        delta = 0 if first is None else _indent(orig) - _indent(rep[first])
+        u = [_shift(ln, delta) for ln in rep] if delta else rep
+        f = list(rep)
+        if delta and first is not None:
+            f[first] = _shift(rep[first], delta)
+        changed = changed or bool(delta)
+        uniform.append({**e, "replace": "\n".join(u)} if None not in u else e)
+        first_only.append({**e, "replace": "\n".join(f)} if f[first or 0] is not None else e)
+    if not changed:
+        return []
+    out = [uniform] if uniform != edits else []
+    if first_only not in (edits, uniform):
+        out.append(first_only)
+    return out
+
+
+def indent_hint(ctx: Context, edits: list[dict]) -> str:
+    """For an IndentationError: say exactly how the replacement's indentation differs from the code it replaces."""
+    notes = []
+    for e in edits:
+        try:
+            orig = ctx.sandbox.read_file(f"{REPO_DIR}/{e['path']}").split("\n")[e["start_line"] - 1].rstrip("\r")
+        except Exception:
+            continue
+        rep = next((ln for ln in e["replace"].split("\n") if ln.strip()), "")
+        if rep and _indent(orig) != _indent(rep):
+            notes.append(f"{e['path']} line {e['start_line']} is indented {_indent(orig)} spaces, but the first line "
+                         f"of your replacement is indented {_indent(rep)}")
+    return (" Indentation: " + "; ".join(notes) + ".") if notes else ""
+
+
 SYNTAX_CHECK = ("import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1])")
+
+
+def syntax_error_line(stderr: str, path: str) -> int | None:
+    """Line of the SyntaxError in `path`. The check runs through `python -c`, so the traceback's FIRST
+    `line N` is the wrapper's own (`File "<string>", line 1`); the real one is `File "<path>", line N`.
+    (Live bug, D58: models were shown the top of the file instead of the broken line.)"""
+    hits = re.findall(r'File "[^"]*' + re.escape(path) + r'", line (\d+)', stderr or "")
+    return int(hits[-1]) if hits else None
 
 
 def syntax_errors(ctx: Context, paths: list[str]) -> list[str]:
@@ -147,10 +257,10 @@ def syntax_errors(ctx: Context, paths: list[str]) -> list[str]:
             continue
         err = (res.stderr or res.stdout).strip().splitlines()
         what = err[-1] if err else "SyntaxError"
-        m = re.search(r"line (\d+)", res.stderr or "")
+        n = syntax_error_line(res.stderr or "", path)
         context = ""
-        if m:
-            n = int(m.group(1))
+        if n:
+            what = f"{what} at line {n}"
             try:
                 lines = ctx.sandbox.read_file(f"{REPO_DIR}/{path}").split("\n")
                 context = " Lines around it:\n" + "\n".join(
@@ -160,6 +270,21 @@ def syntax_errors(ctx: Context, paths: list[str]) -> list[str]:
         errors.append(f"your edit makes {path} invalid Python ({what}). Check the indentation of your replacement: "
                       f"it must line up with the surrounding code.{context}")
     return errors
+
+
+def changed_lines(diff: str) -> int:
+    """Added plus removed lines of a unified diff (headers excluded)."""
+    return sum(1 for ln in diff.splitlines()
+               if ln[:1] in "+-" and not ln.startswith(("+++", "---")))
+
+
+def size_error(diff: str) -> str | None:
+    n = changed_lines(diff)
+    if n <= MAX_CHANGED_LINES:
+        return None
+    return (f"your change touches {n} lines (the limit is {MAX_CHANGED_LINES}). A fix for a reported bug is usually "
+            f"a few lines: find the single place where the wrong value is produced and change only that. Do not "
+            f"rewrite or re-indent the surrounding function.")
 
 
 def repo_diff(ctx: Context) -> str:

@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from itr.agent.budget import init_budget
@@ -165,6 +167,7 @@ def test_good_fix_is_verified_and_repo_is_left_clean(env):
     assert run_fix_verify(ctx) == State.REPORT
     shown = [p["content"] for t, p in log.events if t == "artifact" and p["name"] == "verified_fix"][0]
     assert "xs[1:]" in shown["patch"] and shown["test_code"] == GOOD_TEST and shown["before"]["exit_code"] == 1
+    assert shown["failing_before"] == ["tests/test_total.py::test_total_includes_first_item"]
     fx = ctx.run.fix
     assert fx["verified"] and fx["before_result"]["exit_code"] == 1 and fx["after_result"]["exit_code"] == 0
     assert "xs[1:]" in fx["patch"] and fx["suite"] == {"ran": True, "new_failures": []}
@@ -226,8 +229,8 @@ def test_plan_that_edits_protected_files_never_reaches_the_sandbox(env):
 
 
 def test_wrong_line_numbers_are_a_plan_error_with_the_real_line_and_repo_unchanged(env):
-    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[edit(4, 4, "for x in xs[1:]:", "    for x in xs:")])]}))
-    assert fix(ctx) == State.VERIFY
+    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[edit(4, 4, "while the list is not empty:", "    for x in xs:")])]}))
+    assert fix(ctx) == State.VERIFY          # a quote that is not in the file cannot be relocated, so it is refused
     assert "line 4 is" in ctx.run.fix["plan_errors"][0] and "s += x" in ctx.run.fix["plan_errors"][0]
     assert env.read_file(f"{REPO_DIR}/lib.py") == LIB
 
@@ -250,6 +253,7 @@ def test_escalates_to_ultra_on_third_attempt(env):
     assert [c[0] for c in llm.calls] == ["super", "super", "super", "super", "super", "ultra"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="killing bash on timeout does not kill its Python child on Windows")
 def test_hang_repro_accepts_a_test_that_times_out_before_the_patch(env, monkeypatch):
     import importlib
     v = importlib.import_module("itr.agent.stages.verify")
@@ -264,25 +268,77 @@ def test_hang_repro_accepts_a_test_that_times_out_before_the_patch(env, monkeypa
     assert ctx.run.fix["before_result"]["timed_out"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="killing bash on timeout does not kill its Python child on Windows")
+def test_a_patch_that_makes_the_existing_suite_hang_is_not_verified(env, monkeypatch):
+    import importlib
+    v = importlib.import_module("itr.agent.stages.verify")
+    monkeypatch.setattr(v, "SUITE_TIMEOUT", 4)
+    hang_on_empty = edit(3, 4, "for x in xs[1:]:", "    for x in xs:\n        s += x\n    while not xs:\n        pass")
+    write_repro_script(env)
+    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[hang_on_empty])]}), tests_ok=True)
+    assert run_fix_verify(ctx) == State.FIX                       # not REPORT with a "verified" patch
+    assert not ctx.run.fix.get("verified")
+    assert "did not finish" in ctx.run.fix["failure"] and "existing test hang" in ctx.run.fix["failure"]
+
+
 # ---- REPORT
-def test_report_keeps_outcome_and_survives_model_failure():
-    ctx, log = make_ctx(llm=FakeLLM({"nano": ["not json", "still not json"]}))
+FX = {"patch": "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n", "regression_test": "def test_x():\n    assert f() == 1\n",
+      "test_path": "tests/test_x.py", "root_cause": "f() ignores the first item.", "failing_before": ["tests/test_x.py::test_x"],
+      "suite": {"ran": True, "new_failures": []}}
+
+
+def report_ctx(prose, outcome=None):
+    ctx, log = make_ctx(llm=FakeLLM({"nano": prose}))
     init_budget(ctx.run)
-    ctx.run.repro = {"script": "s", "last_output": "o"}
-    ctx.run.fix = {"patch": "d", "regression_test": "t", "test_path": "tests/test_x.py"}
+    ctx.run.outcome = outcome
+    ctx.run.repro = {"script": "import lib\nassert lib.f() == 1\n", "last_output": "AssertionError\n"}
+    ctx.run.fix = dict(FX)
+    return ctx, log
+
+
+def comment_of(log):
+    return [p for t, p in log.events if t == "artifact" and p["name"] == "report"][0]["content"]
+
+
+def test_report_pastes_code_verbatim_whatever_the_model_says():
+    """The model returns prose only; even a reply that tries to include its own diff cannot change the patch."""
+    ctx, log = report_ctx([{"title": "f ignores item 0", "summary": "Calling f() returns the wrong value.\n```diff\n+WRONG\n```"}])
     assert report(ctx) == State.DONE
-    assert ctx.run.outcome == "CONFIRMED"
-    art = [p for t, p in log.events if t == "artifact" and p["name"] == "report"][0]["content"]
-    assert art["generated_by_model"] is False and "### Proposed patch" in art["comment"]
+    art = comment_of(log)
+    assert ctx.run.outcome == "CONFIRMED" and art["generated_by_model"] is True
+    assert FX["patch"].rstrip() in art["comment"] and FX["regression_test"].rstrip() in art["comment"]
+    assert "import lib" in art["comment"] and "### Cause" in art["comment"] and "f() ignores the first item." in art["comment"]
+    assert "tests/test_x.py::test_x" in art["comment"] and "re-run with no new failures" in art["comment"]
 
 
-def test_report_does_not_overwrite_needs_maintainer():
-    ctx, log = make_ctx(llm=FakeLLM({"nano": [{"title": "T", "comment": "c"}]}))
-    init_budget(ctx.run)
-    ctx.run.outcome = "NEEDS_MAINTAINER"
-    ctx.run.repro = {"script": "s", "last_output": "o"}
+def test_report_survives_model_failure_with_the_same_evidence():
+    ctx, log = report_ctx(["not json"])
+    assert report(ctx) == State.DONE and ctx.run.outcome == "CONFIRMED"
+    art = comment_of(log)
+    assert art["generated_by_model"] is False and FX["patch"].rstrip() in art["comment"]
+
+
+def test_report_does_not_overwrite_needs_maintainer_and_never_shows_a_patch():
+    ctx, log = report_ctx([{"title": "T", "summary": "I reproduced it but could not verify a patch."}], outcome="NEEDS_MAINTAINER")
     report(ctx)
+    art = comment_of(log)
     assert ctx.run.outcome == "NEEDS_MAINTAINER"
+    assert "Proposed patch" not in art["comment"] and "No patch could be verified" in art["comment"]
+    assert "Suspected cause (unverified)" in art["comment"]
+
+
+def test_report_model_sees_facts_not_code():
+    ctx, _ = report_ctx([{"title": "T", "summary": "S"}])
+    report(ctx)
+    sent = ctx.llm_call.calls[0][1][1]["content"]
+    assert "+new" not in sent and "assert lib.f()" not in sent        # no code is handed to the model to retype
+
+
+def test_report_tidy_repairs_one_line_prose():
+    from itr.agent.stages.report import tidy
+    assert tidy("A`nB") == "A\nB"
+    assert tidy("A\\nB") == "A\nB"
+    assert tidy("a\nb with `n inside") == "a\nb with `n inside"      # real line breaks are left alone
 
 
 def test_numbers_shown_to_the_model_match_the_numbers_used_to_edit(tmp_path):
@@ -305,8 +361,9 @@ def test_report_tidy_repairs_one_line_comments():
 
 
 def test_an_edit_that_breaks_indentation_is_caught_before_verify_and_names_the_line(env):
-    dedented = edit(3, 3, "for x in xs[1:]:", "for x in xs:")           # lost its 4-space indent
-    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[dedented])]}))
+    # first line is right, the body line is not: no uniform shift can repair it (a lost first-line indent can; see test_reindent)
+    broken = edit(3, 3, "for x in xs[1:]:", "    for x in xs:\n  s += 0")
+    ctx, _ = make(env, FakeLLM({"super": [LOCATE, fix_plan(edits=[broken])]}))
     assert fix(ctx) == State.VERIFY
     err = ctx.run.fix["plan_errors"][0]
     assert "invalid Python" in err and "indentation" in err and "for x in xs:" in err
@@ -321,11 +378,3 @@ def test_a_repeated_patch_is_refused_with_the_earlier_failure(env):
     assert run_fix_verify(ctx) == State.FIX
     assert fix(ctx) == State.VERIFY
     assert "identical to the ones in attempt 1" in ctx.run.fix["plan_errors"][0]
-
-
-def test_plain_comment_does_not_repeat_the_title():
-    from itr.agent.stages.report import plain_comment
-    data = {"outcome": "CONFIRMED", "issue_title": "T", "reproduction": {"script": "s", "output": "o"},
-            "patch": "d", "test_path": "t.py", "test_code": "c"}
-    out = plain_comment(data)
-    assert out["comment"].count("T") == 0 and out["title"].startswith("Reproduced")

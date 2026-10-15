@@ -78,6 +78,10 @@ def _fail(ctx: Context, reason: str) -> State:
     fx["failure"] = reason
     if fx.get("history"):
         fx["history"][-1]["failure"] = reason
+        # The test fails on the original and passes on the patch: patch and test agree, so if a later
+        # check failed this is the best unverified candidate to show a maintainer (D58).
+        after = fx.get("after_result") or {}
+        fx["history"][-1]["test_agrees"] = after.get("exit_code") == 0 and not after.get("timed_out")
     ctx.artifact("verify_failed", {"reason": clip(reason, 1500)})
     if attempts_left(ctx.run, "fix") > 0:
         return State.FIX
@@ -108,6 +112,7 @@ def verify(ctx: Context) -> State:
         ctx.sandbox.write_file(f"{REPO_DIR}/{test_path}", fx["regression_test"])
         before = ctx.sh(pytest_command(flags, test_path), timeout=TEST_TIMEOUT)
         fx["before_result"] = result_dict(before)
+        fx["failing_before"] = sorted(failed_tests(before.stdout))
         why = judge_before(before, kind)
         if why:
             return _fail(ctx, why)
@@ -137,11 +142,15 @@ def verify(ctx: Context) -> State:
                 fx["suite"]["new_failures"] = bad
                 if bad:
                     return _fail(ctx, "breaks existing tests that passed before the patch: " + ", ".join(bad[:8]))
-            else:
+            else:       # the suite FINISHED before the patch and does not now: the patch hangs or slows an existing test
                 fx["suite"]["ran"] = False
+                tail = "\n".join((res.stdout or "").strip().splitlines()[-6:])
+                return _fail(ctx, f"the project's own tests finished before the patch but did not finish within "
+                                  f"{SUITE_TIMEOUT} s after it, so the patch makes an existing test hang or run far "
+                                  f"slower. Last output:\n{clip(tail, 600)}")
         fx["verified"] = True
         ctx.artifact("verified_fix", {"patch": fx.get("patch", ""), "test_path": test_path,
-                                      "test_code": fx["regression_test"], "root_cause": fx.get("root_cause", ""),
+                                      "test_code": fx["regression_test"], "failing_before": fx["failing_before"], "root_cause": fx.get("root_cause", ""),
                                       "notes": fx.get("notes", ""), "before": fx["before_result"],
                                       "after": fx["after_result"], "repro_after": fx.get("repro_after"),
                                       "suite": fx["suite"]})

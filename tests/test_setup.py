@@ -1,3 +1,5 @@
+import shutil
+
 import pytest
 
 from itr.agent.budget import init_budget
@@ -112,6 +114,8 @@ def test_setup_reads_pyproject_so_the_first_attempt_installs_the_group():
     assert any("--group tests" in c for c in sb.commands) and ctx.run.env["attempts"] == 1
 
 
+@pytest.mark.skipif(shutil.which("bash") is None or "system32" in (shutil.which("bash") or "").lower(),
+                    reason="needs a POSIX bash (the command runs in the Linux sandbox)")
 def test_config_peek_command_is_valid_shell():
     import subprocess
     cmd = CONFIG_PEEK.replace(REPO_DIR, "/tmp")

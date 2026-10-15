@@ -10,17 +10,20 @@ from itr.agent.states import State
 
 KINDS = ["bug", "feature", "question", "duplicate", "unclear"]
 
+# Property order matters: the model writes the evidence (steps, expected, actual) BEFORE it chooses `kind`,
+# so the label is conditioned on what it just wrote. Live run on tabulate-241 (D61): kind came first and was
+# "feature" while the same reply's `actual` said "returns an invalid markdown table", which is a bug.
 TRIAGE_SCHEMA = {
     "type": "object",
     "properties": {
-        "kind": {"enum": KINDS},
-        "claimed_version": {"type": ["string", "null"]},
         "steps": {"type": "array", "items": {"type": "string"}},
         "expected": {"type": "string"},
         "actual": {"type": "string"},
+        "claimed_version": {"type": ["string", "null"]},
         "missing_info": {"type": "array", "items": {"type": "string"}},
+        "kind": {"enum": KINDS},
     },
-    "required": ["kind", "claimed_version", "steps", "expected", "actual", "missing_info"],
+    "required": ["steps", "expected", "actual", "claimed_version", "missing_info", "kind"],
     "additionalProperties": False,
 }
 

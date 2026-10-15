@@ -33,7 +33,7 @@ OUT = ROOT / "live_runs"
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("case", help="case id from eval/cases.yaml, e.g. tabulate-180")
-    ap.add_argument("--max-cost", type=float, default=0.15, help="dollar cap for the run (default 0.15)")
+    ap.add_argument("--max-cost", type=float, default=0.25, help="dollar cap for the run (default 0.25)")
     ap.add_argument("--sandbox", choices=["nebius", "local"], default="nebius")
     args = ap.parse_args()
 

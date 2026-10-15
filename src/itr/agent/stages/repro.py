@@ -100,8 +100,30 @@ def run_command(script_path: str, flags: list[str]) -> str:
     return f"cd {REPO_DIR} && PYTHONPATH={REPO_DIR}:{REPO_DIR}/src {PYTHON}{flag_text} {script_path}"
 
 
+def optional_dependencies(pyproject_text: str) -> dict[str, list[str]]:
+    """The library's declared optional extras ({extra: [requirement names]}), minus the ones that only
+    serve development. A bug that needs an optional package (tabulate-399: wide characters need wcwidth)
+    never mentions it in the issue; the project's own metadata does (D58)."""
+    try:
+        import tomllib
+        extras = tomllib.loads(pyproject_text).get("project", {}).get("optional-dependencies", {})
+    except Exception:
+        return {}
+    skip = {"test", "tests", "testing", "dev", "docs", "doc", "lint", "typing", "all"}
+    out: dict[str, list[str]] = {}
+    for name, reqs in extras.items():
+        if name.lower() in skip or not isinstance(reqs, list):
+            continue
+        names = [re.split(r"[<>=!~;\[ ]", str(r), maxsplit=1)[0] for r in reqs[:5]]
+        out[name] = [n for n in names if n]
+        if len(out) >= 8:
+            break
+    return out
+
+
 # ---------------------------------------------------------------- steps
-def build_payload(ctx: Context, history: list[dict], source_files: str, attempts_left: int) -> dict:
+def build_payload(ctx: Context, history: list[dict], source_files: str, attempts_left: int,
+                  optional: dict[str, list[str]] | None = None) -> dict:
     issue, env = ctx.run.issue, ctx.run.env or {}
     comments = [(c.get("body", "") if isinstance(c, dict) else str(c)) for c in issue.get("comments", [])[:10]]
     payload = {
@@ -112,6 +134,7 @@ def build_payload(ctx: Context, history: list[dict], source_files: str, attempts
         "python": env.get("python"),
         "checked_out": {"ref": env.get("ref"), "note": env.get("ref_note")},
         "source_files": source_files.strip().splitlines(),
+        "optional_dependencies": optional or {},
         "attempts_left_including_this_one": attempts_left,
         "previous_attempts": [
             {"script": h["script"], "python_flags": h["python_flags"], "extra_packages": h["extra_packages"],
@@ -158,11 +181,12 @@ def repro(ctx: Context) -> State:
     installed: list[str] = list(previous.get("installed", []))
     source_files = ctx.sh(LAYOUT_CMD).stdout
     ctx.sh(f"mkdir -p {SCRIPT_DIR}")
+    optional = optional_dependencies(ctx.sh(f"cat {REPO_DIR}/pyproject.toml 2>/dev/null").stdout)
 
     while spend_attempt(ctx.run, "repro"):
         b = ctx.run.budget
         left = b["max_attempts"].get("repro", 1) - b["attempts"].get("repro", 0) + 1
-        payload = build_payload(ctx, history, source_files, left)
+        payload = build_payload(ctx, history, source_files, left, optional)
         messages = [{"role": "system", "content": ctx.prompt("repro")},
                     {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
         plan = ctx.model_json("super", messages, REPRO_SCHEMA, stage="repro").data

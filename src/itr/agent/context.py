@@ -13,10 +13,14 @@ import jsonschema
 from itr.agent import budget
 from itr.llm import LLMCall, LLMResponse
 from itr.models import Run, Tier
+from itr.retry import retry_call
 from itr.sandbox.base import ExecResult, Sandbox
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 MAX_OUTPUT_CHARS = 4000
+
+
+ESCALATE = {"nano": "super", "super": "ultra", "ultra": "ultra"}     # who answers after an unusable reply
 
 
 class StageError(Exception):
@@ -63,7 +67,8 @@ class Context:
     def model(self, tier: Tier, messages: list[dict], schema: dict | None = None,
               stage: str = "") -> LLMResponse:
         budget.check(self.run)
-        resp = self.llm_call(tier, messages, schema)
+        resp = retry_call(self.llm_call, tier, messages, schema,
+                          on_retry=lambda n, e: self.emit("model_retry", {"tier": tier, "attempt": n, "error": str(e)[:200]}))
         budget.record_tokens(self.run, resp.tier, resp.tokens_in, resp.tokens_out)
         self.emit("model_call", {
             "stage": stage, "tier": resp.tier, "model": resp.model,
@@ -74,8 +79,10 @@ class Context:
 
     def model_json(self, tier: Tier, messages: list[dict], schema: dict,
                    stage: str = "", retries: int = 1) -> LLMResponse:
-        """Call a model and require JSON matching `schema`. On invalid output, retry with the
-        validation error fed back; raise StageError when retries run out."""
+        """Call a model and require JSON matching `schema`. On an unusable reply, retry with the problem fed
+        back, and on the NEXT tier up: a reply that is empty or cut off usually means the model spent its whole
+        output budget thinking, and asking the same model the same question just does it again (seen live: two
+        16000-token replies in a row ended three eval runs as ERROR). Raises StageError when retries run out."""
         msgs = list(messages)
         last_err = ""
         for _ in range(retries + 1):
@@ -86,8 +93,15 @@ class Context:
                     data = json.loads(data)
                 except json.JSONDecodeError as e:
                     last_err = f"not valid JSON: {e}"
-                    msgs = msgs + [{"role": "user", "content":
-                                    f"Your last reply was {last_err}. Reply with only valid JSON."}]
+                    empty = not data.strip()
+                    note = ("Your last reply was EMPTY: you ran out of room while thinking. Think briefly and "
+                            "reply with only the JSON." if empty else
+                            f"Your last reply was {last_err}. Reply with only valid JSON.")
+                    msgs = msgs + [{"role": "user", "content": note}]
+                    nxt = ESCALATE.get(tier, tier)
+                    if nxt != tier:
+                        self.emit("model_escalated", {"stage": stage, "from": tier, "to": nxt, "reason": last_err[:120]})
+                    tier = nxt
                     continue
             try:
                 jsonschema.validate(data, schema)

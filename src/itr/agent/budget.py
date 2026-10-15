@@ -18,7 +18,7 @@ DEFAULTS = {
     "max_attempts": {"setup": 4, "repro": 4, "fix": 4},
     "max_tokens": 300_000,
     "max_seconds": 900,
-    "max_cost_usd": 0.15,   # ~6 runs per $1 of trial credit
+    "max_cost_usd": 0.25,   # ~4 runs per $1; 0.15 was too tight once reasoning calls hit max_tokens (D58)
 }
 
 

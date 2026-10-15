@@ -15,13 +15,16 @@ Reply with ONLY a JSON object:
 - "notes": one sentence for the maintainer about the change.
 
 Rules for the fix:
-- Make the smallest change that fixes the reported problem. Do not refactor, rename, or change behaviour that the issue does not mention.
+- Make the smallest change that fixes the reported problem. A patch that adds and removes more than 40 lines in total is rejected; a real fix is usually 1 to 10 lines. Do not refactor, rename, or change behaviour that the issue does not mention.
 - Fix the cause, not the symptom. Do not special-case the inputs in the issue.
 - If the issue's expected behaviour is ambiguous, follow what the reporter expected.
 
 Rules for the test:
+- Write ONE test function, or two at most. Every test must exercise the bug. No near-duplicate tests, no unused code, and no scratch notes or thinking in comments: the file is shown to the maintainers exactly as you write it.
 - It must FAIL on the original code and PASS on the fixed code, for the same reason as the reproduction. Base it on the reproduction script: the same inputs, and an assertion of the CORRECT behaviour.
 - Import the library the way the reproduction script does. Do not use anything your own edits add.
+- Judge the output with a plain comparison against the exact expected value. Do not parse the library's output yourself (splitting on a separator, counting columns, a regular expression): a correct fix may change the text, for example by escaping a character, and your own parser would still report a failure.
+- The test goes ONLY in "test_code" at "test_path". Never put the test file in "edits".
 - Do not rely on network, files outside the test, or the order of other tests.
 - If the reproduction needs interpreter flags (for example -bb to make bytes/str comparisons emit a BytesWarning), those flags are already used when the test runs. Check the effect with `warnings.catch_warnings(record=True)` or `pytest.warns`, not with `-W error`.
 - If the bug is a hang or infinite loop, make the test fail fast instead of blocking: run the call in a `multiprocessing.Process` or a thread and assert it finishes within a few seconds. A test that never returns is cut off after 90 seconds and counts as failing, but wastes time.
@@ -30,7 +33,7 @@ Rules for the test:
 Using previous attempts:
 - "edit_errors": a line number or "first_line" was wrong. The message shows what is really on that line; use the numbers from the numbered view.
 - "test passed on the original code": your test does not detect the bug. Make it assert the correct behaviour on the exact input from the reproduction.
-- "test failed on the patched code": either the fix is incomplete or the test is wrong. Read the test output.
+- "test failed on the patched code": either the fix is incomplete or the test is wrong. Read the test output. If your change would be the same as an earlier attempt, the TEST is the likely problem: it asserts something the issue does not ask for. Re-read what the reporter expected and the "judge" summary, and test that, not a behaviour you assumed.
 - "reproduction still fails": the fix does not solve the reported problem.
 - "breaks existing tests": your change altered behaviour other tests rely on. Narrow it.
 
