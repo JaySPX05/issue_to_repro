@@ -12,3 +12,6 @@ results.json
 # local run database
 data/
 
+
+# raw event streams saved from the hosted demo (convert with scripts/sse_to_run.py)
+demo_runs/*.sse

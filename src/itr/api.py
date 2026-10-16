@@ -4,6 +4,8 @@
     GET  /runs/{id}/events     SSE: every stored event, then live ones, then `event: end`
     GET  /runs/{id}            final state: run row + stages, artifacts, tokens, reason
     POST /runs/{id}/replay     ?speed=4  -> {"run_id": new id}; re-streams a stored run, no model calls
+    GET  /runs/live            ?issue_url=...  SSE: starts a run AND streams it in this one request
+    GET  /runs/{id}/replay-stream  ?speed=4  SSE: replays a stored run in this one request, no writes
     GET  /runs                 recent runs (for the UI's history list)
     GET  /health               liveness check
     /                          the static UI in web/ (when the folder exists)
@@ -19,6 +21,10 @@ Configuration (environment or .env, see .env.example):
     ALLOW_NEW_RUNS       default true; false makes a public demo replay-only (POST /runs -> HTTP 403)
     SEED_DIR             default <repo>/demo_runs; exported runs (*.json) loaded at startup
     WEB_DIR              default <repo>/web
+    RUN_MODE             background (default) | inline. Inline is for serverless hosts such as Vercel,
+                         where an instance keeps nothing between requests: the UI then uses the two
+                         single-request endpoints above instead of POST + /events.
+    RUN_MAX_SECONDS      optional time budget per run (inline default 270, under Vercel's 300 s cap)
 
 Run locally:  python -m itr.api            (http://127.0.0.1:8000)
 """
@@ -78,9 +84,18 @@ def default_run_fn(run_id: str, issue_url: str, emit: Callable[[str, dict], None
     from itr.agent.context import Context
     from itr.agent.machine import run_machine
     from itr.models import Run
+    from itr.agent.budget import init_budget
     ctx = Context(run=Run(id=run_id, issue={"url": issue_url}), sandbox=make_sandbox(),
                   llm_call=llm.call, emit_fn=emit)
+    max_seconds = config.get("RUN_MAX_SECONDS")
+    if max_seconds:                                   # e.g. stay under a serverless time limit
+        init_budget(ctx.run, max_seconds=int(max_seconds))
     run_machine(ctx)
+
+
+def _stream_response(gen) -> StreamingResponse:
+    return StreamingResponse(gen, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def _sse(data: dict, seq: int | None = None, event: str | None = None) -> str:
@@ -105,6 +120,10 @@ def create_app(store: Store | None = None, run_fn: RunFn | None = None,
     run_fn = run_fn or default_run_fn
     limit = max_concurrent or int(config.get("MAX_CONCURRENT_RUNS", "2") or 2)
     allow_runs = _flag("ALLOW_NEW_RUNS", True) if allow_new_runs is None else allow_new_runs
+    mode = (config.get("RUN_MODE", "background") or "background").lower()
+    if mode == "inline":
+        os.environ.setdefault("RUN_MAX_SECONDS", "270")
+    inline_limit = float(config.get("INLINE_DEADLINE_S", "285") or 285)
     slots = threading.BoundedSemaphore(limit)
     interrupted = store.mark_interrupted()
     if interrupted:
@@ -144,20 +163,38 @@ def create_app(store: Store | None = None, run_fn: RunFn | None = None,
     # ---- routes -----------------------------------------------------------------------
     @app.get("/health")
     def health() -> dict:
-        return {"ok": True, "new_runs": allow_runs}
+        return {"ok": True, "new_runs": allow_runs, "mode": mode}
 
-    @app.post("/runs")
-    def start_run(req: RunRequest) -> dict:
+    def launch(issue_url: str) -> str:
+        """Validate, take a slot, create the run and start the agent thread. Raises HTTPException."""
         if not allow_runs:
             raise HTTPException(403, "This demo is replay-only: pick a previous run and press Replay")
-        url = req.issue_url.strip()
+        url = issue_url.strip()
         if not ISSUE_URL.match(url):
             raise HTTPException(422, "issue_url must look like https://github.com/OWNER/REPO/issues/123")
         if not slots.acquire(blocking=False):
             raise HTTPException(429, f"{limit} run(s) already in progress; try again shortly")
         run_id = store.create_run(url)
         threading.Thread(target=execute, args=(run_id, url), daemon=True, name=f"run-{run_id}").start()
-        return {"run_id": run_id}
+        return run_id
+
+    @app.post("/runs")
+    def start_run(req: RunRequest) -> dict:
+        return {"run_id": launch(req.issue_url)}
+
+    @app.get("/runs/live")
+    async def live_run(issue_url: str, request: Request) -> StreamingResponse:
+        """Start a run and stream it in the same request (serverless hosts keep nothing between
+        requests, so the run must live inside the request that watches it)."""
+        try:
+            run_id = launch(issue_url)
+        except HTTPException as e:
+            refusal = {"status": e.status_code, "detail": e.detail}
+
+            async def refuse():
+                yield _sse(refusal, event="fail")
+            return _stream_response(refuse())
+        return _stream_response(tail(run_id, request, 0, deadline=time.time() + inline_limit))
 
     @app.get("/runs")
     def list_runs(limit: int = 20) -> list[dict]:
@@ -181,6 +218,42 @@ def create_app(store: Store | None = None, run_fn: RunFn | None = None,
         threading.Thread(target=replay, args=(run_id, new_id, speed), daemon=True).start()
         return {"run_id": new_id, "replay_of": run_id}
 
+    async def tail(run_id: str, request: Request, last: int, deadline: float | None = None):
+        """Yield SSE messages for a run: stored events after `last`, then live ones, then `end`.
+        With a deadline, a run still going at that time is closed as ERROR (platform time limit)."""
+        seq, cost, idle = last, 0.0, 0.0
+        for ev in store.events(run_id)[:last]:               # cost so far, when resuming
+            if ev.type == "model_call":
+                cost += call_cost(ev.payload)
+        while True:
+            new = await asyncio.to_thread(store.events, run_id, seq)
+            for ev in new:
+                seq = ev.seq
+                if ev.type == "model_call":
+                    cost += call_cost(ev.payload)
+                yield _sse({**dataclasses.asdict(ev), "cost_usd": round(cost, 6)}, seq=ev.seq)
+                if ev.type == "outcome":
+                    yield _sse({"run_id": run_id}, event="end")
+                    return
+            if new:
+                idle = 0.0
+                continue
+            run = store.get_run(run_id)
+            if run is None or run["state"] == "done":       # finished with no outcome event
+                yield _sse({"run_id": run_id}, event="end")
+                return
+            if deadline is not None and time.time() >= deadline:
+                store.append(run_id, "outcome", {"outcome": "ERROR", "reason":
+                             f"stopped at the hosting platform's time limit ({int(inline_limit)}s)"})
+                continue
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(POLL_S)
+            idle += POLL_S
+            if idle >= PING_S:
+                idle = 0.0
+                yield ": ping\n\n"
+
     @app.get("/runs/{run_id}/events")
     async def stream(run_id: str, request: Request) -> StreamingResponse:
         if store.get_run(run_id) is None:
@@ -189,39 +262,34 @@ def create_app(store: Store | None = None, run_fn: RunFn | None = None,
             last = int(request.headers.get("last-event-id") or request.query_params.get("after") or 0)
         except ValueError:
             last = 0
+        return _stream_response(tail(run_id, request, last))
+
+    @app.get("/runs/{run_id}/replay-stream")
+    async def replay_stream(run_id: str, request: Request, speed: float = 4.0) -> StreamingResponse:
+        """Replay a finished run inside this one request, paced like the original. Writes nothing."""
+        src = store.get_run(run_id)
+        if src is None:
+            raise HTTPException(404, "run not found")
+        if src["state"] != "done":
+            raise HTTPException(409, "run is still in progress; replay it once it has finished")
+        events = store.events(run_id)
 
         async def gen():
-            seq, cost, idle = last, 0.0, 0.0
-            for ev in store.events(run_id)[:last]:               # cost so far, when resuming
-                if ev.type == "model_call":
-                    cost += call_cost(ev.payload)
-            while True:
-                new = await asyncio.to_thread(store.events, run_id, seq)
-                for ev in new:
-                    seq = ev.seq
-                    if ev.type == "model_call":
-                        cost += call_cost(ev.payload)
-                    yield _sse({**dataclasses.asdict(ev), "cost_usd": round(cost, 6)}, seq=ev.seq)
-                    if ev.type == "outcome":
-                        yield _sse({"run_id": run_id}, event="end")
-                        return
-                if new:
-                    idle = 0.0
-                    continue
-                run = store.get_run(run_id)
-                if run is None or run["state"] == "done":       # finished with no outcome event
-                    yield _sse({"run_id": run_id}, event="end")
-                    return
+            cost, prev_ts, t0 = 0.0, None, time.time()
+            for ev in events:
+                if speed > 0 and prev_ts is not None:
+                    await asyncio.sleep(min(max(ev.ts - prev_ts, 0) / speed, MAX_REPLAY_GAP_S))
+                prev_ts = ev.ts
                 if await request.is_disconnected():
                     return
-                await asyncio.sleep(POLL_S)
-                idle += POLL_S
-                if idle >= PING_S:
-                    idle = 0.0
-                    yield ": ping\n\n"
+                if ev.type == "model_call":
+                    cost += call_cost(ev.payload)
+                data = {**dataclasses.asdict(ev), "ts": time.time() if speed > 0 else t0 + ev.seq,
+                        "cost_usd": round(cost, 6), "replay_of": run_id}
+                yield _sse(data, seq=ev.seq)
+            yield _sse({"run_id": run_id}, event="end")
 
-        return StreamingResponse(gen(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return _stream_response(gen())
 
     # ---- static UI (mounted last so the API routes win) -------------------------------
     web = Path(web_dir or config.get("WEB_DIR") or REPO_ROOT / "web")

@@ -17,6 +17,7 @@ Values are sent only to Hugging Face and never printed. The Space rebuilds after
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -66,10 +67,19 @@ def main(argv: list[str] | None = None) -> int:
         print("Install it first:  python -m pip install huggingface_hub")
         return 1
     api = HfApi()
+    token = (os.environ.get("HF_TOKEN") or "").strip()
+    if token:
+        os.environ["HF_TOKEN"] = token                     # a stray space or newline from pasting
+        if not token.startswith("hf_"):
+            print(f"HF_TOKEN does not look like a Hugging Face token (it should start with hf_; "
+                  f"it is {len(token)} characters long). Set it again.")
+            return 1
     try:
         user = api.whoami()["name"]
-    except Exception:
-        print("Not logged in to Hugging Face. Run:  hf auth login   (use a token with WRITE access)")
+    except Exception as e:
+        hint = "HF_TOKEN is set but was rejected" if token else "No HF_TOKEN set and not logged in"
+        print(f"{hint}: {type(e).__name__}: {str(e)[:200]}")
+        print('Set it with:  $env:HF_TOKEN = Read-Host "Paste your Hugging Face token"   (a WRITE token)')
         return 1
     space = args.space or f"{user}/{SPACE_NAME}"
 
